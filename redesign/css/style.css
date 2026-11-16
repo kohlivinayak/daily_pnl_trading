@@ -32,6 +32,9 @@
   --r-md: 14px;
   --r-sm: 9px;
   --pad: clamp(16px, 4vw, 56px);
+  /* page width: fills the screen up to 1880px; side margins scale with the screen */
+  --gutter: clamp(16px, 3vw, 64px);
+  --maxw: 1880px;
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
 }
@@ -75,7 +78,7 @@ code { font-family: var(--mono); font-size: 0.9em; color: var(--text-2); }
 .nav {
   position: fixed; top: 16px; left: 50%; z-index: 50;
   transform: translateX(-50%);
-  width: min(1180px, calc(100% - 32px));
+  width: min(var(--maxw), calc(100% - 2 * var(--gutter)));
   display: flex; align-items: center; gap: 24px;
   padding: 10px 10px 10px 20px;
   border: 1px solid var(--line);
@@ -194,7 +197,7 @@ code { font-family: var(--mono); font-size: 0.9em; color: var(--text-2); }
 /* ---------------- Filter bar ---------------- */
 .filterbar {
   position: sticky; top: 84px; z-index: 40;
-  margin: -34px auto 0; width: min(1180px, calc(100% - 32px));
+  margin: -34px auto 0; width: min(var(--maxw), calc(100% - 2 * var(--gutter)));
   display: flex; align-items: center; gap: 22px; flex-wrap: wrap;
   padding: 12px 16px;
   border: 1px solid var(--line); border-radius: var(--r-lg);
@@ -232,7 +235,7 @@ code { font-family: var(--mono); font-size: 0.9em; color: var(--text-2); }
 .chip.on i { opacity: 1; box-shadow: 0 0 8px var(--c); }
 
 /* ---------------- Blocks ---------------- */
-.block { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 120px 0 0; }
+.block { width: min(var(--maxw), calc(100% - 2 * var(--gutter))); margin: 0 auto; padding: 120px 0 0; }
 .block-head { margin-bottom: 32px; display: flex; justify-content: space-between; align-items: flex-end; gap: 20px 32px; flex-wrap: wrap; }
 .block-head > div:first-child { max-width: 680px; }
 .kicker { margin: 0 0 10px; font-family: var(--mono); font-size: 12px; color: var(--gold); letter-spacing: 0.06em; }
@@ -267,6 +270,8 @@ code { font-family: var(--mono); font-size: 0.9em; color: var(--text-2); }
 .tile { overflow: hidden; display: flex; flex-direction: column; justify-content: space-between; }
 .tile.big { grid-column: span 2; grid-row: span 2; }
 .tile.wide { grid-column: span 2; }
+/* wide screens: 6 columns — all 8 tiles fit in two rows instead of stretching */
+@media (min-width: 1500px) { .bento { grid-template-columns: repeat(6, 1fr); } }
 .tile .val {
   font-family: var(--display); font-weight: 500; letter-spacing: -0.03em; line-height: 1;
   font-size: clamp(30px, 3.4vw, 44px); font-feature-settings: "tnum" 1, "lnum" 1;
@@ -406,7 +411,7 @@ code { font-family: var(--mono); font-size: 0.9em; color: var(--text-2); }
 
 /* ---------------- Footer ---------------- */
 .foot {
-  width: min(1180px, calc(100% - 32px)); margin: 120px auto 0; padding: 28px 0 40px;
+  width: min(var(--maxw), calc(100% - 2 * var(--gutter))); margin: 120px auto 0; padding: 28px 0 40px;
   border-top: 1px solid var(--line); display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap;
   font-size: 13px; color: var(--text-2);
 }
@@ -939,7 +944,7 @@ button:disabled { cursor: default; }
 .menu-btn.open .l2 { opacity: 0; }
 .menu-btn.open .l3 { transform: translateY(-4px) rotate(-45deg); }
 .mobile-menu {
-  position: fixed; top: 76px; left: 50%; z-index: 49; width: min(1180px, calc(100% - 32px));
+  position: fixed; top: 76px; left: 50%; z-index: 49; width: min(var(--maxw), calc(100% - 2 * var(--gutter)));
   transform: translate(-50%, -8px); opacity: 0; transition: opacity 0.2s, transform 0.3s var(--ease-out);
   display: grid; padding: 8px; border-radius: var(--r-lg); border: 1px solid var(--line-2);
   background: rgba(12,14,21,0.94); backdrop-filter: blur(18px); box-shadow: 0 30px 60px -20px rgba(0,0,0,0.8);
@@ -997,6 +1002,14 @@ button:disabled { cursor: default; }
 .toast-act:hover { text-decoration: underline; text-underline-offset: 3px; }
 
 /* ---------------- Responsive ---------------- */
+/* top bar never wraps; between tablet and laptop widths it drops the clock */
+.nav .btn, .live-badge, .view-only, .nav-links a { white-space: nowrap; }
+@media (max-width: 1200px) {
+  .live-time { display: none; }
+  .nav { gap: 14px; }
+  .nav-links a { padding: 8px 10px; }
+}
+
 @media (max-width: 980px) {
   .bento { grid-template-columns: repeat(2, 1fr); }
   .cal-layout { grid-template-columns: 1fr; }
