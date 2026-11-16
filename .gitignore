@@ -1,0 +1,8 @@
+﻿node_modules/
+redesign/data/
+*.mp4
+# secrets for local runs — never commit
+.env
+.env.*
+!.env.example
+
