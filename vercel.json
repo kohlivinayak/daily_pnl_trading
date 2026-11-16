@@ -4,10 +4,13 @@
     {
       "src": "server.js",
       "use": "@vercel/node",
-      "config": { "includeFiles": ["public/**", "redesign/**"] }
-    }
+      "config": { "includeFiles": ["public/**", "redesign/index.html"] }
+    },
+    { "src": "redesign/css/**", "use": "@vercel/static" },
+    { "src": "redesign/js/**", "use": "@vercel/static" }
   ],
   "routes": [
+    { "src": "/_td/(css|js)/(.*)", "dest": "/redesign/$1/$2" },
     { "src": "/(.*)", "dest": "server.js" }
   ]
 }

@@ -309,6 +309,12 @@ const OLD_BASE = CFG.siteMode === 'new' ? '/classic/' : '/';
 
 // redesign/data holds local test copies only — never serve it.
 app.use(NEW_BASE + 'data', (req, res) => res.sendStatus(404));
+app.use('/_td/data', (req, res) => res.sendStatus(404));
+
+// The new site's CSS/JS live at /_td/ in every layout. On Vercel this path is
+// served by the static layer (see vercel.json) so the files are never rewritten
+// by the Node bundler; locally (and as a fallback) Express serves them here.
+app.use('/_td', express.static(NEW_DIR, { index: false }));
 
 if (CFG.siteMode === 'new') {
   // Classic site under /classic: its HTML uses absolute /css and /js paths, so rewrite them.
