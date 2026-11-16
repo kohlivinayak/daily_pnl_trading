@@ -298,6 +298,100 @@ api.post('/ops', wrap(async (req, res) => {
   res.json({ ok: true, who, result: out.result, data: out.rec, meta: meta(out.rec) });
 }));
 
+/* ---------------- Backtest vs Live (read-only, passkey-protected) ----------------
+   Backtests are CSV files in backtests/ (one per strategy; file name = strategy,
+   e.g. "Narad - Hedge.csv"). Replace the file to update it. Never written here. */
+const BT_DIR = path.join(__dirname, 'backtests');
+// Live entries before this date are ignored by the comparison (env COMPARE_FROM, YYYY-MM-DD).
+// From 1 Dec 2026 each portfolio is logged on its own, so earlier combined entries don't compare.
+const COMPARE_FROM = /^\d{4}-\d{2}-\d{2}$/.test(process.env.COMPARE_FROM || '') ? process.env.COMPARE_FROM : '2026-12-01';
+const DMY = /^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/;
+function dmyToIso(s) {
+  const m = DMY.exec(String(s || '').trim());
+  if (!m) return null;
+  const iso = `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+  return Number.isNaN(Date.parse(iso)) ? null : iso;
+}
+function splitCsvLine(line) {
+  const out = []; let cur = '', quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (quoted) { if (c === '"') { if (line[i + 1] === '"') { cur += '"'; i++; } else quoted = false; } else cur += c; }
+    else if (c === '"') quoted = true;
+    else if (c === ',') { out.push(cur); cur = ''; }
+    else cur += c;
+  }
+  out.push(cur);
+  return out.map(s => s.trim());
+}
+function parseBacktestCsv(text) {
+  const lines = text.replace(/^﻿/, '').split(/\r?\n/).filter(l => l.trim());
+  if (!lines.length) return { error: 'File is empty.' };
+  const head = splitCsvLine(lines[0]).map(h => h.toLowerCase());
+  const col = names => head.findIndex(h => names.includes(h));
+  const iEntry = col(['entry date']), iExit = col(['exit date']), iEt = col(['entry time']), iXt = col(['exit time']);
+  const iVix = col(['vix', 'india vix']), iPl = col(['p/l', 'pnl', 'p&l', 'profit/loss', 'profit']);
+  if (iExit < 0 || iPl < 0) return { error: 'The file needs "Exit Date" and "P/L" columns.' };
+  const trades = []; let skipped = 0;
+  for (const line of lines.slice(1)) {
+    const c = splitCsvLine(line);
+    const exit = dmyToIso(c[iExit]);
+    const pnl = Number(String(c[iPl] || '').replace(/,/g, ''));
+    if (!exit || !Number.isFinite(pnl)) { skipped++; continue; }
+    const vix = iVix >= 0 ? Number(c[iVix]) : NaN;
+    trades.push({
+      entry: iEntry >= 0 ? dmyToIso(c[iEntry]) : null,
+      exit, pnl,
+      entryTime: iEt >= 0 ? c[iEt] : '', exitTime: iXt >= 0 ? c[iXt] : '',
+      vix: Number.isFinite(vix) ? vix : null,
+    });
+  }
+  trades.sort((a, b) => a.exit.localeCompare(b.exit));
+  return { trades, skipped };
+}
+let btCache = { key: '', list: [] };
+function loadBacktests() {
+  if (!fs.existsSync(BT_DIR)) return [];
+  const files = fs.readdirSync(BT_DIR).filter(f => /\.csv$/i.test(f)).sort();
+  const key = files.map(f => f + ':' + fs.statSync(path.join(BT_DIR, f)).mtimeMs).join('|');
+  if (key === btCache.key) return btCache.list;
+  const list = files.map(f => {
+    const parsed = parseBacktestCsv(fs.readFileSync(path.join(BT_DIR, f), 'utf8'));
+    return { strategy: f.replace(/\.csv$/i, ''), file: f, ...parsed };
+  });
+  btCache = { key, list };
+  return list;
+}
+
+// Short-lived signed token so the page asks for the passkey once per browser session.
+const TOKEN_SECRET = crypto.createHash('sha256')
+  .update('compare-v1|' + (process.env.COMPARE_SECRET || `${CFG.key}|${process.env.PASSKEY_HASHES || ''}`)).digest();
+const TOKEN_HOURS = 12;
+function makeToken(who) {
+  const body = Buffer.from(JSON.stringify({ who, exp: Date.now() + TOKEN_HOURS * 3600e3 })).toString('base64url');
+  return body + '.' + crypto.createHmac('sha256', TOKEN_SECRET).update(body).digest('base64url');
+}
+function readToken(header) {
+  const [body, sig] = String(header || '').replace(/^Bearer\s+/i, '').split('.');
+  if (!body || !sig) return null;
+  const good = crypto.createHmac('sha256', TOKEN_SECRET).update(body).digest('base64url');
+  if (good.length !== sig.length || !crypto.timingSafeEqual(Buffer.from(good), Buffer.from(sig))) return null;
+  try { const p = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')); return p.exp > Date.now() ? p.who : null; }
+  catch { return null; }
+}
+
+api.post('/compare/auth', wrap(async (req, res) => {
+  const who = checkPasskey(req.body && req.body.passkey, req.ip);
+  res.json({ ok: true, who, token: makeToken(who), hours: TOKEN_HOURS });
+}));
+
+api.get('/compare/data', wrap(async (req, res) => {
+  const who = readToken(req.get('Authorization'));
+  if (!who) fail(401, 'Please enter your passkey to view this page.');
+  const live = await readBin(); // 1 JSONBin request
+  res.json({ ok: true, who, live, backtests: loadBacktests(), trackFrom: COMPARE_FROM });
+}));
+
 app.use('/api', api);
 app.use('/api', (req, res) => res.status(404).json({ ok: false, error: 'Not found.' }));
 
@@ -315,6 +409,10 @@ app.use('/_td/data', (req, res) => res.sendStatus(404));
 // served by the static layer (see vercel.json) so the files are never rewritten
 // by the Node bundler; locally (and as a fallback) Express serves them here.
 app.use('/_td', express.static(NEW_DIR, { index: false }));
+
+// Backtest vs Live page (the page shell is public; its data needs the passkey)
+const COMPARE_PATHS = CFG.siteMode === 'new' ? ['/compare', '/compare/'] : ['/new/compare', '/new/compare/'];
+app.get(COMPARE_PATHS, (req, res) => res.sendFile(path.join(NEW_DIR, 'compare.html')));
 
 if (CFG.siteMode === 'new') {
   // Classic site under /classic: its HTML uses absolute /css and /js paths, so rewrite them.

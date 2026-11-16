@@ -1075,3 +1075,7 @@ button:disabled { cursor: default; }
   html { scroll-behavior: auto; }
   .reveal { opacity: 1; transform: none; }
 }
+
+/* link to the Backtest vs Live page */
+.nav-links a.nav-bt { color: var(--gold); }
+.nav-links a.nav-bt:hover { color: var(--gold-2); background: rgba(244,197,107,0.1); }

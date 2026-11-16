@@ -4,7 +4,7 @@
     {
       "src": "server.js",
       "use": "@vercel/node",
-      "config": { "includeFiles": ["public/**", "redesign/index.html"] }
+      "config": { "includeFiles": ["public/**", "redesign/index.html", "redesign/compare.html", "backtests/**"] }
     },
     { "src": "redesign/css/**", "use": "@vercel/static" },
     { "src": "redesign/js/**", "use": "@vercel/static" }

@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Backtest vs Live · TradeDesk</title>
+  <meta name="robots" content="noindex" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..700;1,9..144,300..600&family=Geist:wght@300..700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/_td/css/style.css?v=22" />
+  <link rel="stylesheet" href="/_td/css/compare.css?v=4" />
+</head>
+<body class="cmp">
+  <div class="grain" aria-hidden="true"></div>
+
+  <header class="nav">
+    <a class="brand" href="./" aria-label="Back to the TradeDesk dashboard">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+        <rect x="4" y="14" width="5" height="14" rx="1.5" />
+        <rect x="13.5" y="6" width="5" height="22" rx="1.5" />
+        <rect x="23" y="18" width="5" height="10" rx="1.5" />
+      </svg>
+      <span>TradeDesk</span>
+    </a>
+    <span class="cmp-crumb">Backtest vs Live</span>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="#score">Scorecard</a>
+      <a href="#curves">Curves</a>
+      <a href="#gap">Gap</a>
+      <a href="#range">Normal range</a>
+      <a href="#days">Days</a>
+      <a href="#months">Months</a>
+      <a href="#vix">VIX</a>
+    </nav>
+    <span class="who" id="whoChip" hidden></span>
+    <button type="button" class="btn-ghost lock-btn" id="lockBtn" hidden>Lock</button>
+  </header>
+
+  <main id="app" hidden>
+    <section class="cmp-hero">
+      <p class="kicker">Backtest vs Live</p>
+      <h1>Is it trading like the backtest<span class="gold">?</span></h1>
+      <p class="sub" id="heroSub"></p>
+      <div class="cmp-controls">
+        <div class="ctl"><span class="filter-label">Strategy</span><div class="seg" id="stratSeg"></div></div>
+        <div class="ctl"><span class="filter-label">Period</span><div class="seg" id="periodSeg"></div></div>
+        <span class="period-label" id="periodLabel"></span>
+      </div>
+    </section>
+
+    <!-- 1 Scorecard -->
+    <section class="block" id="score">
+      <div class="block-head"><div><p class="kicker">01 — Scorecard</p><h2>Backtest and each account</h2>
+        <p class="sub">Backtest days are counted on the trade’s <b>exit date</b>. Each account is compared with the backtest on the same dates it traded.</p></div></div>
+      <div class="score-grid" id="scoreGrid"></div>
+    </section>
+
+    <!-- 2 Curves -->
+    <section class="block" id="curves">
+      <div class="block-head"><div><p class="kicker">02 — Equity curves</p><h2>Where the lines split</h2>
+        <p class="sub">Cumulative P&amp;L from the account’s first live day. Gold dots are manual exits, red dots technical glitches.</p></div>
+        <div class="period-wrap"><div class="seg acc-seg" data-for="curves"></div></div></div>
+      <div class="card curve-card">
+        <div class="curve-read" id="curveRead"></div>
+        <div class="curve-chart" id="curveChart"></div>
+        <div class="curve-legend" id="curveLegend"></div>
+      </div>
+    </section>
+
+    <!-- 3 Gap -->
+    <section class="block" id="gap">
+      <div class="block-head"><div><p class="kicker">03 — The gap</p><h2>Where the difference came from</h2>
+        <p class="sub">From the backtest total to the live total, step by step: execution on matched days, then trades taken by only one side.</p></div>
+        <div class="period-wrap"><div class="seg acc-seg" data-for="gap"></div></div></div>
+      <div class="card"><div class="gw" id="gapChart"></div><p class="muted small gw-note" id="gapNote"></p></div>
+    </section>
+
+    <!-- 4 Normal range -->
+    <section class="block" id="range">
+      <div class="block-head"><div><p class="kicker">04 — Normal range</p><h2 class="q">Bad patch, or broken?</h2>
+        <p class="sub">The account’s recent run and drawdown, measured against every stretch in the backtest’s full history.</p></div>
+        <div class="period-wrap"><div class="seg acc-seg" data-for="range"></div></div></div>
+      <div class="range-grid" id="rangeGrid"></div>
+    </section>
+
+    <!-- 5 Days -->
+    <section class="block" id="days">
+      <div class="block-head"><div><p class="kicker">05 — Day by day</p><h2>Every session, side by side</h2></div></div>
+      <div class="card">
+        <div class="day-tools"><div class="chips" id="dayFilters"></div><span class="journal-count" id="dayCount"></span></div>
+        <div class="table-wrap"><table class="ledger cmp-table" id="dayTable"><thead></thead><tbody></tbody></table></div>
+      </div>
+    </section>
+
+    <!-- 6 Months -->
+    <section class="block" id="months">
+      <div class="block-head"><div><p class="kicker">06 — Month by month</p><h2>The monthly scorecard</h2>
+        <p class="sub">“Clean-run gap” counts only days the account logged as a clean run.</p></div></div>
+      <div class="card"><div class="table-wrap"><table class="ledger cmp-table" id="monthTable"><thead></thead><tbody></tbody></table></div></div>
+    </section>
+
+    <!-- 7 VIX -->
+    <section class="block" id="vix">
+      <div class="block-head"><div><p class="kicker">07 — By VIX</p><h2>Does the market mood matter?</h2>
+        <p class="sub">VIX on the trade’s exit day. The first column is the backtest’s full history, for context.</p></div></div>
+      <div class="card"><div class="table-wrap"><table class="ledger cmp-table" id="vixTable"><thead></thead><tbody></tbody></table></div></div>
+    </section>
+
+    <footer class="foot">
+      <span>TradeDesk · Backtest vs Live</span>
+      <span class="muted" id="footNote"></span>
+    </footer>
+  </main>
+
+  <!-- passkey gate -->
+  <div class="lock-screen" id="lockScreen" hidden>
+    <form class="lock-card" id="lockForm" novalidate>
+      <div class="pk-lock" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2.5" /><path d="M8 10.5V8a4 4 0 018 0v2.5" /><circle cx="12" cy="15.5" r="1.4" /></svg>
+      </div>
+      <p class="kicker" style="margin:0">Backtest vs Live</p>
+      <h3>Enter your passkey</h3>
+      <p class="muted small">This page is for Nishant and Vinayak.</p>
+      <input class="input pk-input" id="lockInput" type="password" autocomplete="off" maxlength="64" placeholder="••••••••••" aria-label="Passkey" />
+      <p class="form-err" id="lockErr" role="alert"></p>
+      <button type="submit" class="btn btn-gold wide" id="lockOk">Open</button>
+      <a class="muted small back-link" href="./">‹ Back to the dashboard</a>
+    </form>
+  </div>
+
+  <div class="tip" id="tip" role="tooltip"></div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script type="module" src="/_td/js/compare.js?v=6"></script>
+</body>
+</html>
