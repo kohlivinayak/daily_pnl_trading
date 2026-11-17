@@ -1130,7 +1130,22 @@ function hideModal(modal) {
 }
 
 /* ---------------- register a new strategy ---------------- */
-const MARKETS = ['NSE F&O', 'BSE F&O', 'MCX', 'Equity', 'Other'];
+const MARKETS = ['NSE', 'BSE', 'MCX'];
+const marketsOf = s => {
+  const list = Array.isArray(s.markets) ? s.markets : s.market ? [s.market] : [];
+  return MARKETS.filter(m => list.some(x => String(x).toUpperCase().startsWith(m)));
+};
+// multi-select chips: picked is a Set that the chips toggle
+function marketChips(host, picked, onChange) {
+  host.innerHTML = MARKETS.map(m => `<button type="button" class="rchip${picked.has(m) ? ' on' : ''}" data-v="${m}" aria-pressed="${picked.has(m)}">${m}</button>`).join('');
+  host.querySelectorAll('.rchip').forEach(b => b.addEventListener('click', () => {
+    const m = b.dataset.v;
+    if (picked.has(m)) picked.delete(m); else picked.add(m);
+    b.classList.toggle('on', picked.has(m)); b.setAttribute('aria-pressed', picked.has(m));
+    onChange?.();
+  }));
+}
+const pickedList = picked => MARKETS.filter(m => picked.has(m));
 const SWATCHES = ['#f4c56b', '#4cc9f0', '#a78bfa', '#ff9f5a', '#f472b6', '#60a5fa', '#e9e46b', '#c4b5fd', '#5eead4', '#fca5a5'];
 const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
 
@@ -1176,9 +1191,9 @@ function renderStrategyList(who, onChange, highlight) {
     <div class="sl-group"><span class="sl-trader">${esc(t)}</span>
       ${list.map(s => `<div class="sl-row${s.id === highlight ? ' fresh' : ''}" data-id="${esc(s.id)}" style="--c:${s.color}">
         <i class="sl-dot"></i>
-        <div class="sl-main"><span class="sl-name">${esc(s.short)}</span><span class="sl-meta">${plural(count(s.id))}${s.market ? ' · ' + esc(s.market) : ''}${s.registeredBy ? ' · added by ' + esc(s.registeredBy) : ''}</span></div>
+        <div class="sl-main"><span class="sl-name">${esc(s.short)}</span><span class="sl-meta">${plural(count(s.id))}${marketsOf(s).length ? ' · ' + marketsOf(s).join(' + ') : ''}${s.registeredBy ? ' · added by ' + esc(s.registeredBy) : ''}</span></div>
         <div class="sl-actions">
-          <button type="button" class="sl-btn" data-act="rename">Rename</button>
+          <button type="button" class="sl-btn" data-act="rename">Edit</button>
           <button type="button" class="sl-btn del" data-act="delete">Delete</button>
         </div>
       </div>`).join('')}
@@ -1191,7 +1206,9 @@ function renderStrategyList(who, onChange, highlight) {
 
     row.querySelector('[data-act="rename"]').addEventListener('click', () => {
       row.classList.add('editing');
-      row.querySelector('.sl-main').innerHTML = `<input class="input sl-input" maxlength="40" value="${esc(s.short)}" aria-label="New name for ${esc(s.name)}" /><span class="sl-err" role="alert"></span>`;
+      row.querySelector('.sl-main').innerHTML = `<input class="input sl-input" maxlength="40" value="${esc(s.short)}" aria-label="New name for ${esc(s.name)}" /><div class="sl-markets" role="group" aria-label="Markets"></div><span class="sl-err" role="alert"></span>`;
+      const picked = new Set(marketsOf(s));
+      marketChips(row.querySelector('.sl-markets'), picked);
       row.querySelector('.sl-actions').innerHTML = `<button type="button" class="sl-btn" data-act="cancel">Cancel</button><button type="button" class="sl-btn save" data-act="save">Save</button>`;
       const input = row.querySelector('input');
       input.focus(); input.select();
@@ -1199,19 +1216,22 @@ function renderStrategyList(who, onChange, highlight) {
       const save = async () => {
         if (saving) return;
         const nn = input.value.trim().replace(/\s+/g, ' ').replace(/\s-\s/g, ' · ');
-        const full = `${s.trader} - ${nn}`;
+        // untouched name → keep it exactly as stored (the box shows "A · B" for names like "Trader - A - B")
+        const full = nn === s.short ? s.name : `${s.trader} - ${nn}`;
         const err = row.querySelector('.sl-err');
         if (!nn) { err.textContent = 'Name can’t be empty.'; return; }
-        if (full === s.name) { again(); return; }
+        const marketsNow = pickedList(picked);
+        const marketsSame = marketsNow.join() === marketsOf(s).join();
+        if (full === s.name && marketsSame) { again(); return; }
         if (data.strategies.some(x => x.id !== id && x.name.toLowerCase() === full.toLowerCase())) { err.textContent = 'That name is already used.'; return; }
         saving = true;
         // id stays the same on the server, so all entries follow the new name
-        const res = await runOp('renameStrategy', { id, name: full }, who.key);
+        const res = await runOp('renameStrategy', { id, name: full, markets: marketsNow }, who.key);
         saving = false;
         if (!res) { err.textContent = 'Not saved.'; return; }
         onChange?.();
         again(id);
-        toast(`Renamed to ${full} by ${who.who}`);
+        toast(full !== s.name ? `Renamed to ${full} by ${who.who}` : `${full}: markets set to ${marketsNow.join(' + ') || 'none'} by ${who.who}`);
       };
       row.querySelector('[data-act="save"]').addEventListener('click', save);
       row.querySelector('[data-act="cancel"]').addEventListener('click', () => again());
@@ -1254,7 +1274,7 @@ function renderStrategyList(who, onChange, highlight) {
 function showStrategyForm(who, onSaved, onBack) {
   const form = $('#regForm');
   setManageView('form');
-  let market = MARKETS[0];
+  const picked = new Set(['NSE']);
   const usedColors = new Set(strategies.map(s => s.color));
   let color = SWATCHES.find(c => !usedColors.has(c)) || SWATCHES[0];
 
@@ -1265,10 +1285,7 @@ function showStrategyForm(who, onSaved, onBack) {
   $('#newTraderWrap').hidden = true;
   $('#regErr').textContent = '';
 
-  const chips = () => {
-    $('#marketChips').innerHTML = MARKETS.map(m => `<button type="button" class="rchip${m === market ? ' on' : ''}" data-v="${esc(m)}">${esc(m)}</button>`).join('');
-    $('#marketChips').querySelectorAll('.rchip').forEach(b => b.addEventListener('click', () => { market = b.dataset.v; chips(); }));
-  };
+  const chips = () => marketChips($('#marketChips'), picked, () => preview());
   const swatches = () => {
     $('#swatches').innerHTML = SWATCHES.map(c => `<button type="button" class="sw-btn${c === color ? ' on' : ''}" style="--c:${c}" data-c="${c}" aria-label="Colour ${c}"></button>`).join('');
     $('#swatches').querySelectorAll('.sw-btn').forEach(b => b.addEventListener('click', () => { color = b.dataset.c; swatches(); preview(); }));
@@ -1279,7 +1296,7 @@ function showStrategyForm(who, onSaved, onBack) {
     $('#regPreview').innerHTML = `<span class="k">Preview</span>
       <div class="strat-card mini" style="--c:${color}">
         <div class="strat-top"><div><div class="strat-trader">${esc(t)}</div><div class="strat-name">${esc(n)}</div></div><div class="rank">NEW</div></div>
-        <div class="mini-meta"><span>${esc(market)}</span><span>${form.capital.value ? compact(+form.capital.value) + ' capital' : 'no capital yet'}</span></div>
+        <div class="mini-meta"><span>${pickedList(picked).join(' + ') || 'no market picked'}</span><span>${form.capital.value ? compact(+form.capital.value) + ' capital' : 'no capital yet'}</span></div>
       </div>`;
   };
   chips(); swatches(); preview();
@@ -1301,6 +1318,7 @@ function showStrategyForm(who, onSaved, onBack) {
     const name = form.name.value.trim().replace(/\s+/g, ' ').replace(/\s-\s/g, ' · ');
     if (!trader) { err.textContent = 'Add the trader’s name.'; return; }
     if (!name) { err.textContent = 'Give the strategy a name.'; return; }
+    if (!picked.size) { err.textContent = 'Pick at least one market (NSE, BSE or MCX).'; return; }
     const full = `${trader} - ${name}`;
     if (data.strategies.some(s => s.name.toLowerCase() === full.toLowerCase())) { err.textContent = 'That strategy is already registered.'; return; }
     let id = (slug(`${trader}__${name}`) || 'strategy').slice(0, 70);
@@ -1308,7 +1326,7 @@ function showStrategyForm(who, onSaved, onBack) {
     const capital = +form.capital.value || null;
     saving = true; err.textContent = '';
     // the server stamps registeredBy / registeredAt itself
-    const res = await runOp('addStrategy', { strategy: { id, name: full, color, market, capital } }, who.key);
+    const res = await runOp('addStrategy', { strategy: { id, name: full, color, markets: pickedList(picked), capital } }, who.key);
     saving = false;
     if (!res) { err.textContent = 'Not saved — see the message at the bottom.'; return; }
     cleanup();

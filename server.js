@@ -129,6 +129,13 @@ const sortEntries = entries => entries.sort((a, b) => a.date.localeCompare(b.dat
 const nameTaken = (rec, name, exceptId) => rec.strategies.some(s => s.id !== exceptId && String(s.name).toLowerCase() === name.toLowerCase());
 const cleanName = s => String(s || '').trim().replace(/\s+/g, ' ');
 
+// Where a strategy trades — any combination of these
+const MARKETS = ['NSE', 'BSE', 'MCX'];
+function cleanMarkets(v) {
+  const list = Array.isArray(v) ? v : v ? [v] : [];
+  return MARKETS.filter(m => list.some(x => String(x).trim().toUpperCase().startsWith(m)));
+}
+
 function cleanStrategy(s, rec, who) {
   if (!s || typeof s !== 'object') fail(400, 'Strategy is missing.');
   const id = String(s.id || '');
@@ -139,7 +146,8 @@ function cleanStrategy(s, rec, who) {
   if (nameTaken(rec, name)) fail(409, 'That strategy is already registered.');
   const color = /^#[0-9a-f]{6}$/i.test(s.color) ? s.color : '#f4c56b';
   const out = { id, name, color, customColor: true };
-  if (s.market) out.market = String(s.market).slice(0, 20);
+  const markets = cleanMarkets(s.markets !== undefined ? s.markets : s.market);
+  if (markets.length) out.markets = markets;
   if (s.capital !== undefined && s.capital !== null && s.capital !== '') {
     const c = Number(s.capital);
     if (!Number.isFinite(c) || c < 0) fail(400, 'Starting capital must be a number.');
@@ -203,7 +211,12 @@ const OPS = {
     if (nameTaken(rec, name, s.id)) fail(409, 'That name is already used.');
     const old = s.name;
     s.name = name; // id unchanged -> every entry keeps pointing at it
-    return { old, name };
+    if (p.markets !== undefined) {           // optional: set where the strategy trades
+      const markets = cleanMarkets(p.markets);
+      if (markets.length) s.markets = markets; else delete s.markets;
+      delete s.market;                       // replaces the old single-choice field
+    }
+    return { old, name, markets: s.markets || [] };
   } },
   deleteStrategy: { passkey: true, apply(rec, p) {
     const index = rec.strategies.findIndex(x => x.id === p.id);
@@ -418,6 +431,12 @@ if (CFG.siteMode === 'new') {
   // Classic site under /classic: its HTML uses absolute /css and /js paths, so rewrite them.
   const classicHtml = () => fs.readFileSync(path.join(OLD_DIR, 'index.html'), 'utf8')
     .replace(/(href|src)="\/(css|js)\//g, '$1="/classic/$2/');
+  // Old /new/... links (from before the switch) go to the same page at the root.
+  // 302 (temporary) so browsers don't remember it if SITE_MODE is ever switched back.
+  app.get(['/new', '/new/*'], (req, res) => {
+    const q = req.originalUrl.includes('?') ? req.originalUrl.slice(req.originalUrl.indexOf('?')) : '';
+    res.redirect(302, (req.path.replace(/^\/new\/?/, '/') || '/') + q);
+  });
   app.get(['/classic', '/classic/', '/classic/index.html'], (req, res) => res.type('html').send(classicHtml()));
   app.use('/classic', express.static(OLD_DIR, { index: false }));
   app.use('/', express.static(NEW_DIR));
