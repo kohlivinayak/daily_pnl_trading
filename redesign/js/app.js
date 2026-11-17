@@ -1150,6 +1150,7 @@ const SWATCHES = ['#f4c56b', '#4cc9f0', '#a78bfa', '#ff9f5a', '#f472b6', '#60a5f
 const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
 
 /* Manage strategies: one passkey, then list (rename / delete) + add form */
+let openStrategyForm = null;
 async function manageStrategies(onChange) {
   const who = await askPasskey('<p>Only Nishant or Vinayak can add, rename or delete strategies.</p>', { okLabel: 'Unlock' });
   if (!who) return;
@@ -1167,18 +1168,20 @@ async function manageStrategies(onChange) {
     $('#addStratBtn').onclick = null; $('#doneStrat').onclick = null;
     hideModal(modal);
   };
-  $('#addStratBtn').onclick = () => showStrategyForm(who, id => { lastAdded = id; onChange?.(id); showList(); }, showList);
+  // Add and Edit open the same full form (edit = pre-filled with the strategy's current values)
+  openStrategyForm = editId => showStrategyForm(who, id => { lastAdded = id; onChange?.(id); showList(); }, showList, editId);
+  $('#addStratBtn').onclick = () => openStrategyForm();
   $('#doneStrat').onclick = finish;
   addEventListener('keydown', onKey, true);
   showList();
   showModal(modal);
 }
 
-function setManageView(v) {
+function setManageView(v, editing = false) {
   $('#regList').hidden = v !== 'list';
   $('#regForm').hidden = v !== 'form';
-  $('#regTitle').textContent = v === 'list' ? 'Manage strategies' : 'Register a strategy';
-  $('#regKicker').textContent = v === 'list' ? `${strategies.length} strateg${strategies.length === 1 ? 'y' : 'ies'}` : 'New strategy';
+  $('#regTitle').textContent = v === 'list' ? 'Manage strategies' : editing ? 'Edit strategy' : 'Register a strategy';
+  $('#regKicker').textContent = v === 'list' ? `${strategies.length} strateg${strategies.length === 1 ? 'y' : 'ies'}` : editing ? 'Edit' : 'New strategy';
 }
 
 function renderStrategyList(who, onChange, highlight) {
@@ -1204,42 +1207,8 @@ function renderStrategyList(who, onChange, highlight) {
   host.querySelectorAll('.sl-row').forEach(row => {
     const id = row.dataset.id, s = stratById(id);
 
-    row.querySelector('[data-act="rename"]').addEventListener('click', () => {
-      row.classList.add('editing');
-      row.querySelector('.sl-main').innerHTML = `<input class="input sl-input" maxlength="40" value="${esc(s.short)}" aria-label="New name for ${esc(s.name)}" /><div class="sl-markets" role="group" aria-label="Markets"></div><span class="sl-err" role="alert"></span>`;
-      const picked = new Set(marketsOf(s));
-      marketChips(row.querySelector('.sl-markets'), picked);
-      row.querySelector('.sl-actions').innerHTML = `<button type="button" class="sl-btn" data-act="cancel">Cancel</button><button type="button" class="sl-btn save" data-act="save">Save</button>`;
-      const input = row.querySelector('input');
-      input.focus(); input.select();
-      let saving = false;
-      const save = async () => {
-        if (saving) return;
-        const nn = input.value.trim().replace(/\s+/g, ' ').replace(/\s-\s/g, ' · ');
-        // untouched name → keep it exactly as stored (the box shows "A · B" for names like "Trader - A - B")
-        const full = nn === s.short ? s.name : `${s.trader} - ${nn}`;
-        const err = row.querySelector('.sl-err');
-        if (!nn) { err.textContent = 'Name can’t be empty.'; return; }
-        const marketsNow = pickedList(picked);
-        const marketsSame = marketsNow.join() === marketsOf(s).join();
-        if (full === s.name && marketsSame) { again(); return; }
-        if (data.strategies.some(x => x.id !== id && x.name.toLowerCase() === full.toLowerCase())) { err.textContent = 'That name is already used.'; return; }
-        saving = true;
-        // id stays the same on the server, so all entries follow the new name
-        const res = await runOp('renameStrategy', { id, name: full, markets: marketsNow }, who.key);
-        saving = false;
-        if (!res) { err.textContent = 'Not saved.'; return; }
-        onChange?.();
-        again(id);
-        toast(full !== s.name ? `Renamed to ${full} by ${who.who}` : `${full}: markets set to ${marketsNow.join(' + ') || 'none'} by ${who.who}`);
-      };
-      row.querySelector('[data-act="save"]').addEventListener('click', save);
-      row.querySelector('[data-act="cancel"]').addEventListener('click', () => again());
-      input.addEventListener('keydown', e => {
-        if (e.key === 'Enter') { e.preventDefault(); save(); }
-        if (e.key === 'Escape') { e.preventDefault(); again(); }
-      });
-    });
+    // Edit → the same full form as "Add new strategy", pre-filled
+    row.querySelector('[data-act="rename"]').addEventListener('click', () => openStrategyForm?.(id));
 
     row.querySelector('[data-act="delete"]').addEventListener('click', () => {
       const n = count(id);
@@ -1271,23 +1240,30 @@ function renderStrategyList(who, onChange, highlight) {
   });
 }
 
-function showStrategyForm(who, onSaved, onBack) {
+function showStrategyForm(who, onSaved, onBack, editId = null) {
   const form = $('#regForm');
-  setManageView('form');
-  const picked = new Set(['NSE']);
+  const editing = editId ? stratById(editId) : null;
+  setManageView('form', !!editing);
+  const picked = new Set(editing ? marketsOf(editing) : ['NSE']);
   const usedColors = new Set(strategies.map(s => s.color));
-  let color = SWATCHES.find(c => !usedColors.has(c)) || SWATCHES[0];
+  let color = editing ? editing.color : SWATCHES.find(c => !usedColors.has(c)) || SWATCHES[0];
+  const swatchList = SWATCHES.includes(color) ? SWATCHES : [color, ...SWATCHES]; // keep an existing custom colour selectable
 
   $('#regWho').innerHTML = `<i></i>Unlocked by ${esc(who.who)}`;
   const tr = traders();
-  form.trader.innerHTML = tr.map(t => `<option value="${esc(t)}"${t === who.who ? ' selected' : ''}>${esc(t)}</option>`).join('') + '<option value="__new">+ New trader…</option>';
-  form.name.value = ''; form.capital.value = ''; form.newTrader.value = '';
+  if (editing && !tr.includes(editing.trader)) tr.unshift(editing.trader);
+  const selTrader = editing ? editing.trader : who.who;
+  form.trader.innerHTML = tr.map(t => `<option value="${esc(t)}"${t === selTrader ? ' selected' : ''}>${esc(t)}</option>`).join('') + '<option value="__new">+ New trader…</option>';
+  form.name.value = editing ? editing.short : '';
+  form.capital.value = editing && editing.capital != null ? editing.capital : '';
+  form.newTrader.value = '';
   $('#newTraderWrap').hidden = true;
   $('#regErr').textContent = '';
+  form.querySelector('button[type="submit"]').textContent = editing ? 'Save changes' : 'Register strategy';
 
   const chips = () => marketChips($('#marketChips'), picked, () => preview());
   const swatches = () => {
-    $('#swatches').innerHTML = SWATCHES.map(c => `<button type="button" class="sw-btn${c === color ? ' on' : ''}" style="--c:${c}" data-c="${c}" aria-label="Colour ${c}"></button>`).join('');
+    $('#swatches').innerHTML = swatchList.map(c => `<button type="button" class="sw-btn${c === color ? ' on' : ''}" style="--c:${c}" data-c="${c}" aria-label="Colour ${c}"></button>`).join('');
     $('#swatches').querySelectorAll('.sw-btn').forEach(b => b.addEventListener('click', () => { color = b.dataset.c; swatches(); preview(); }));
   };
   const traderName = () => (form.trader.value === '__new' ? form.newTrader.value.trim() : form.trader.value);
@@ -1295,7 +1271,7 @@ function showStrategyForm(who, onSaved, onBack) {
     const t = traderName() || 'Trader', n = form.name.value.trim() || 'Strategy name';
     $('#regPreview').innerHTML = `<span class="k">Preview</span>
       <div class="strat-card mini" style="--c:${color}">
-        <div class="strat-top"><div><div class="strat-trader">${esc(t)}</div><div class="strat-name">${esc(n)}</div></div><div class="rank">NEW</div></div>
+        <div class="strat-top"><div><div class="strat-trader">${esc(t)}</div><div class="strat-name">${esc(n)}</div></div><div class="rank">${editing ? 'EDIT' : 'NEW'}</div></div>
         <div class="mini-meta"><span>${pickedList(picked).join(' + ') || 'no market picked'}</span><span>${form.capital.value ? compact(+form.capital.value) + ' capital' : 'no capital yet'}</span></div>
       </div>`;
   };
@@ -1319,8 +1295,22 @@ function showStrategyForm(who, onSaved, onBack) {
     if (!trader) { err.textContent = 'Add the trader’s name.'; return; }
     if (!name) { err.textContent = 'Give the strategy a name.'; return; }
     if (!picked.size) { err.textContent = 'Pick at least one market (NSE, BSE or MCX).'; return; }
-    const full = `${trader} - ${name}`;
-    if (data.strategies.some(s => s.name.toLowerCase() === full.toLowerCase())) { err.textContent = 'That strategy is already registered.'; return; }
+    // untouched trader + name → keep the stored name exactly (the box shows "A · B" for "Trader - A - B")
+    const full = editing && trader === editing.trader && name === editing.short ? editing.name : `${trader} - ${name}`;
+    if (data.strategies.some(s => s.id !== editId && s.name.toLowerCase() === full.toLowerCase())) { err.textContent = editing ? 'Another strategy already has that name.' : 'That strategy is already registered.'; return; }
+    if (editing) {
+      const capital = form.capital.value === '' ? null : +form.capital.value;
+      if (capital !== null && !(capital >= 0)) { err.textContent = 'Starting capital must be a number.'; return; }
+      saving = true; err.textContent = '';
+      // the id never changes, so every entry stays attached to this strategy
+      const res = await runOp('updateStrategy', { id: editId, name: full, markets: pickedList(picked), color, capital }, who.key);
+      saving = false;
+      if (!res) { err.textContent = 'Not saved — see the message at the bottom.'; return; }
+      cleanup();
+      toast(`${full} updated by ${who.who}`);
+      onSaved(editId);
+      return;
+    }
     let id = (slug(`${trader}__${name}`) || 'strategy').slice(0, 70);
     while (data.strategies.some(s => s.id === id)) id += '_2';
     const capital = +form.capital.value || null;
@@ -1336,7 +1326,7 @@ function showStrategyForm(who, onSaved, onBack) {
   form.addEventListener('input', onInput); form.addEventListener('change', onInput);
   form.addEventListener('submit', onSubmit);
   cancelBtn.addEventListener('click', onCancel);
-  setTimeout(() => form.name.focus(), 80);
+  setTimeout(() => { form.name.focus(); if (editing) form.name.select(); }, 80);
 }
 
 /* ---------------- filters UI ---------------- */
@@ -1426,9 +1416,12 @@ function buildChips() {
 function setupDrawer() {
   const drawer = $('#drawer'), back = $('#drawerBackdrop'), form = $('#logForm');
   let sign = 1, exec = 'clean';
+  // Capital pre-fill: the most recent of (last entry's capital, capital set in Manage strategies)
   const lastFunds = id => {
     const l = data.entries.filter(e => e.strategy === id).sort((a, b) => a.date.localeCompare(b.date)).at(-1);
-    return l ? l.investedFunds : (stratById(id).capital || '');
+    const s = stratById(id);
+    if (s.capital != null && s.capital !== '' && (!l || (s.capitalAt && s.capitalAt >= l.date))) return s.capital;
+    return l ? l.investedFunds : (s.capital || '');
   };
   const fillStrategies = (selectId) => {
     const keep = selectId || form.strategy.value;

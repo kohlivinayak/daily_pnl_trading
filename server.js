@@ -136,6 +136,9 @@ function cleanMarkets(v) {
   return MARKETS.filter(m => list.some(x => String(x).trim().toUpperCase().startsWith(m)));
 }
 
+// Trading dates are Indian dates; the server may run in UTC.
+const todayIST = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+
 function cleanStrategy(s, rec, who) {
   if (!s || typeof s !== 'object') fail(400, 'Strategy is missing.');
   const id = String(s.id || '');
@@ -152,6 +155,7 @@ function cleanStrategy(s, rec, who) {
     const c = Number(s.capital);
     if (!Number.isFinite(c) || c < 0) fail(400, 'Starting capital must be a number.');
     out.capital = c;
+    out.capitalAt = todayIST();
   }
   out.registeredBy = who;
   out.registeredAt = new Date().toISOString();
@@ -217,6 +221,39 @@ const OPS = {
       delete s.market;                       // replaces the old single-choice field
     }
     return { old, name, markets: s.markets || [] };
+  } },
+  // Edit everything from the full form. The id never changes, so entries stay attached.
+  updateStrategy: { passkey: true, apply(rec, p, who) {
+    const s = rec.strategies.find(x => x.id === p.id);
+    if (!s) fail(404, 'That strategy no longer exists. Refresh to see the latest.');
+    const before = { name: s.name, color: s.color, capital: s.capital, markets: s.markets || [] };
+    if (p.name !== undefined) {
+      const name = cleanName(p.name);
+      if (!/^.{1,40} - .{1,60}$/.test(name)) fail(400, 'Strategy name must look like "Trader - Strategy".');
+      if (nameTaken(rec, name, s.id)) fail(409, 'That name is already used.');
+      s.name = name;
+    }
+    if (p.markets !== undefined) {
+      const markets = cleanMarkets(p.markets);
+      if (markets.length) s.markets = markets; else delete s.markets;
+      delete s.market;
+    }
+    if (p.color !== undefined) {
+      if (!/^#[0-9a-f]{6}$/i.test(p.color)) fail(400, 'Colour must look like #a1b2c3.');
+      s.color = p.color;
+      s.customColor = true;
+    }
+    if (p.capital !== undefined) {
+      if (p.capital === null || p.capital === '') { delete s.capital; delete s.capitalAt; }
+      else {
+        const c = Number(p.capital);
+        if (!Number.isFinite(c) || c < 0) fail(400, 'Starting capital must be a number.');
+        if (c !== s.capital) { s.capital = c; s.capitalAt = todayIST(); } // newer than earlier entries → pre-fills Log P&L
+      }
+    }
+    s.editedBy = who;
+    s.editedAt = new Date().toISOString();
+    return { before, strategy: s };
   } },
   deleteStrategy: { passkey: true, apply(rec, p) {
     const index = rec.strategies.findIndex(x => x.id === p.id);
