@@ -2,9 +2,11 @@
    AlgoTest trade log -> daily P&L per portfolio (pure, no DOM)
    ----------------------------------------------------------
    The log has one row per order leg ("Historical Trades" export).
-   For every strategy run + option symbol we walk the fills in time
-   order. Each time the position goes flat, the cash of that round
-   trip is booked on the date of the fill that closed it (= exit date).
+   A "run" = one deployment of one AlgoTest strategy (Strategy ID +
+   deploy Date): all its legs and re-entries. For each leg we walk the
+   fills in time order and add up every round trip. The WHOLE run is
+   booked on its LAST exit date: e.g. entry 1:20 PM day 1, CE stopped
+   out 2 PM day 1, PE + hedges exit 11 AM day 2 -> all of it on day 2.
 
    - Rejected / never-filled orders (price NaN, qty 0, no exchange
      time) are ignored.
@@ -78,43 +80,42 @@ export function parseAlgoTestLog(text) {
   }
   if (!legs.size) return { error: 'No filled trades found in this file.' };
 
-  const days = new Map();      // account|portfolio|date -> row
-  const runLastExit = new Map(); // run -> latest booked date
-  const open = [];
-  const rowFor = (account, portfolio, date) => {
-    const k = account + '|' + portfolio + '|' + date;
-    if (!days.has(k)) days.set(k, { account, portfolio, date, pnl: 0, trades: 0, openLegs: [], strategies: new Set() });
-    return days.get(k);
-  };
-
+  // 1) each run (one deployment of one AlgoTest strategy, with all its legs and re-entries)
+  const runs = new Map();
   for (const fills of legs.values()) {
     fills.sort((a, b) => a.time.localeCompare(b.time));
-    let net = 0, cash = 0, orders = 0;
+    const f0 = fills[0];
+    if (!runs.has(f0.run)) runs.set(f0.run, { account: f0.account, portfolio: f0.portfolio, name: f0.name, pnl: 0, trades: 0, lastExit: '', openLegs: [] });
+    const run = runs.get(f0.run);
+    let net = 0, cash = 0;
     for (const f of fills) {
       net += f.sign * f.qty;
       cash -= f.sign * f.qty * f.price;
-      orders++;
-      if (net === 0) {
-        const r = rowFor(f.account, f.portfolio, f.day);
-        r.pnl += cash; r.trades++; r.strategies.add(f.name);
-        if ((runLastExit.get(f.run) || '') < f.day) runLastExit.set(f.run, f.day);
-        cash = 0; orders = 0;
+      if (net === 0) {                       // this leg is flat: round trip done
+        run.pnl += cash; run.trades++; cash = 0;
+        if (f.day > run.lastExit) run.lastExit = f.day;
       }
     }
     if (net !== 0) {
       const f = fills[fills.length - 1];
-      open.push({ ...f, net, since: fills[0].time });
+      run.openLegs.push({ strategy: f.name, symbol: f.symbol, qty: net, since: fills[0].time, expiry: f.expiry, day: f.day });
     }
   }
 
+  // 2) the WHOLE run is booked on its last exit date (a leg stopped out on day 1 while the
+  //    others exit on day 2 -> everything on day 2), summed per portfolio and date
+  const days = new Map();      // account|portfolio|date -> row
   const stillOpen = [];
-  for (const o of open) {
-    // Book the unknown leg on the day the rest of its run closed; else its expiry day.
-    const date = runLastExit.get(o.run) || o.expiry || o.day;
-    const leg = { strategy: o.name, symbol: o.symbol, qty: o.net, since: o.since, expiry: o.expiry };
-    if (!runLastExit.get(o.run) && o.expiry && o.expiry > fileEnd) { stillOpen.push(leg); continue; } // may still be running
-    const r = rowFor(o.account, o.portfolio, date);
-    r.openLegs.push(leg); r.strategies.add(o.name);
+  for (const run of runs.values()) {
+    const legsOpen = run.openLegs;
+    // a run whose open leg hasn't expired by the end of the file may still be running: skip it whole
+    if (legsOpen.some(l => l.expiry && l.expiry > fileEnd)) { stillOpen.push(...legsOpen); continue; }
+    // legs AlgoTest never exited (handled by hand / expired): P&L unknown -> user types the day's figure
+    const date = run.lastExit || legsOpen.map(l => l.expiry || l.day).sort().at(-1);
+    const k = run.account + '|' + run.portfolio + '|' + date;
+    if (!days.has(k)) days.set(k, { account: run.account, portfolio: run.portfolio, date, pnl: 0, trades: 0, openLegs: [], strategies: new Set() });
+    const r = days.get(k);
+    r.pnl += run.pnl; r.trades += run.trades; r.strategies.add(run.name); r.openLegs.push(...legsOpen);
   }
 
   const rows = [...days.values()]

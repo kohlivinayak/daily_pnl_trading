@@ -6,7 +6,7 @@
    the server confirms JSONBin accepted it.
    ========================================================== */
 import { createSkyline } from './skyline.js?v=4';
-import { parseAlgoTestLog } from './algotest.js?v=1';
+import { parseAlgoTestLog } from './algotest.js?v=2';
 
 const API = '/api';
 const PALETTE = ['#f4c56b', '#4cc9f0', '#a78bfa', '#ff9f5a', '#f472b6', '#60a5fa', '#e9e46b', '#c4b5fd'];
@@ -1027,13 +1027,14 @@ async function downloadCsv() {
     const s = v === null || v === undefined ? '' : String(v);
     return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
-  const rows = [['Date', 'Trader', 'Strategy', 'Strategy ID', 'User Capital (INR)', 'Strategy Capital (INR)', 'P&L (INR)', 'Return % (on user capital)', 'Execution']];
+  const rows = [['Date', 'Trader', 'Strategy', 'Strategy ID', 'User Capital (INR)', 'Strategy Capital (INR)', 'P&L (INR)', 'Return % (on user capital)', 'Execution', 'Source']];
   sortedEntries().forEach(e => {
     const s = stratById(e.strategy);
     rows.push([
       e.date, s.trader, s.short, e.strategy, e.investedFunds, isSplit(e) ? e.strategyCapital : '', e.pnl,
       e.investedFunds ? ((e.pnl / e.investedFunds) * 100).toFixed(2) : '',
       EXEC_LABEL[e.execution] || '',
+      e.source === 'algotest' ? 'AlgoTest log' : 'Manual',
     ]);
   });
   // BOM so Excel reads it as UTF-8; CRLF line endings for Excel on Windows
@@ -1176,16 +1177,18 @@ function algoRows() {
   return [...out.values()].map(row => {
     row.pnl = Math.round(row.pnl * 100) / 100;
     row.saved = data.entries.find(e => e.date === row.date && e.strategy === row.sid) || null;
-    row.status = row.openLegs.length ? 'input' : !row.saved ? 'new' : Math.abs(row.saved.pnl - row.pnl) < 1 ? 'same' : 'diff';
+    // a manual entry (typed in Log P&L) always wins: the upload never overwrites it
+    row.status = row.saved && row.saved.source !== 'algotest' ? 'kept'
+      : row.openLegs.length ? 'input' : !row.saved ? 'new' : Math.abs(row.saved.pnl - row.pnl) < 1 ? 'same' : 'diff';
     if (!ALGO.choice.has(row.key)) {
       ALGO.choice.set(row.key, { include: row.status === 'new', exec: row.status === 'input' ? 'manual' : row.saved?.execution || 'clean', pnl: '' });
     }
     row.c = ALGO.choice.get(row.key);
-    if (row.status === 'same') row.c.include = false;
+    if (row.status === 'same' || row.status === 'kept') row.c.include = false;
     return row;
   }).sort((a, b) => a.date.localeCompare(b.date) || a.sid.localeCompare(b.sid));
 }
-const ALGO_STATUS = { new: 'New', diff: 'Different', input: 'Needs P&L', same: 'Same as saved' };
+const ALGO_STATUS = { new: 'New', diff: 'Different', input: 'Needs P&L', same: 'Same as saved', kept: 'Manual entry, kept' };
 function renderAlgo() {
   const P = ALGO.parsed;
   const span = `${dfmt(P.from, { day: 'numeric', month: 'short', year: 'numeric' })} – ${dfmt(P.to, { day: 'numeric', month: 'short', year: 'numeric' })}`;
@@ -1210,7 +1213,7 @@ function renderAlgo() {
   const rows = algoRows();
   const count = st => rows.filter(r => st === 'all' || r.status === st).length;
   if (ALGO.filter !== 'all' && !count(ALGO.filter)) ALGO.filter = 'all';
-  const chips = [['all', 'All'], ['new', 'New'], ['diff', 'Different'], ['input', 'Needs P&L'], ['same', 'Same']];
+  const chips = [['all', 'All'], ['new', 'New'], ['diff', 'Different'], ['input', 'Needs P&L'], ['kept', 'Manual, kept'], ['same', 'Same']];
   $('#algoChips').innerHTML = chips
     .filter(([k]) => k === 'all' || count(k))
     .map(([k, l]) => `<button type="button" data-f="${k}" class="${ALGO.filter === k ? 'on' : ''}">${l}<b>${count(k)}</b></button>`).join('');
@@ -1220,10 +1223,10 @@ function renderAlgo() {
   const tb = $('#algoTable tbody');
   tb.innerHTML = shown.map(r => {
     const s = stratById(r.sid);
-    const locked = r.status === 'same';
-    const legs = r.openLegs.length
+    const locked = r.status === 'same' || r.status === 'kept';
+    const legs = r.openLegs.length && !locked
       ? `<span class="sub">${r.openLegs.length} leg${r.openLegs.length === 1 ? '' : 's'} not exited by AlgoTest (${r.openLegs.map(l => esc(l.symbol)).join(', ')}). Closed legs: ${money(r.pnl)}. Type the day’s full P&amp;L.</span>` : '';
-    const logCell = r.status === 'input'
+    const logCell = r.status === 'input' && !locked
       ? `<input class="input pnl-in${r.c.pnl === '' ? ' missing' : ''}" data-pnl="${esc(r.key)}" type="number" step="0.01" inputmode="decimal" placeholder="P&amp;L ₹" value="${esc(r.c.pnl)}" aria-label="P&L for ${esc(s.name)} on ${r.date}" />`
       : `<b class="${cls(r.pnl)}">${money(r.pnl)}</b>`;
     return `<tr class="${locked ? 'dim' : ''}">
@@ -1284,9 +1287,9 @@ async function saveAlgo() {
   if (!who) return;
   const res = await runOp('importEntries', { entries: list.map(x => x.entry) }, who.key);
   if (!res) return; // not saved, error shown; the review stays open
-  const { added, replaced } = res.result;
+  const { added, replaced, kept = [] } = res.result;
   closeAlgo();
-  toast(`Saved ${added.length + replaced.length} entries from the AlgoTest log by ${who.who}`, {
+  toast(`Saved ${added.length + replaced.length} entries from the AlgoTest log by ${who.who}${kept.length ? ` · ${kept.length} manual entr${kept.length === 1 ? 'y' : 'ies'} kept` : ''}`, {
     label: 'Undo',
     run: async () => {
       if (await runOp('importEntries', { entries: replaced, remove: added }, who.key)) toast('Import undone');

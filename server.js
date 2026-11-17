@@ -130,8 +130,13 @@ function cleanEntry(e, strategyIds) {
     if (!EXECUTIONS.has(e.execution)) fail(400, 'Unknown execution type.');
     out.execution = e.execution;
   }
+  // where it came from: 'algotest' = AlgoTest log upload; absent = typed by hand (manual)
+  if (e.source === 'algotest') out.source = 'algotest';
   return out;
 }
+// A manual entry (typed in Log P&L, or any entry from before uploads existed) always wins:
+// an AlgoTest upload may add new days or replace an earlier upload, never a manual entry.
+const isManual = e => e.source !== 'algotest';
 const sortEntries = entries => entries.sort((a, b) => a.date.localeCompare(b.date));
 const nameTaken = (rec, name, exceptId) => rec.strategies.some(s => s.id !== exceptId && String(s.name).toLowerCase() === name.toLowerCase());
 const cleanName = s => String(s || '').trim().replace(/\s+/g, ' ');
@@ -188,6 +193,7 @@ function cleanBackup(d) {
 const OPS = {
   upsertEntry: { passkey: false, apply(rec, p) {
     const entry = cleanEntry(p.entry, new Set(rec.strategies.map(s => s.id)));
+    delete entry.source; // Log P&L = manual
     const i = rec.entries.findIndex(e => e.date === entry.date && e.strategy === entry.strategy);
     const replaced = i >= 0 ? rec.entries[i] : null;
     if (i >= 0) rec.entries[i] = entry; else rec.entries.push(entry);
@@ -215,7 +221,7 @@ const OPS = {
     const list = Array.isArray(p.entries) ? p.entries : [];
     const remove = Array.isArray(p.remove) ? p.remove : [];
     if (list.length + remove.length > 3000) fail(400, 'Too many rows in one import.');
-    const entries = list.map(e => cleanEntry(e, ids));
+    const entries = list.map(e => ({ ...cleanEntry(e, ids), source: 'algotest' }));
     const keys = new Set();
     for (const e of entries) {
       const k = e.date + '|' + e.strategy;
@@ -225,16 +231,17 @@ const OPS = {
     const removed = [];
     for (const r of remove) {
       const i = rec.entries.findIndex(e => e.date === String(r && r.date) && e.strategy === String(r && r.strategy));
-      if (i >= 0) removed.push(...rec.entries.splice(i, 1));
+      if (i >= 0 && !isManual(rec.entries[i])) removed.push(...rec.entries.splice(i, 1)); // never removes a manual entry
     }
-    const added = [], replaced = [];
+    const added = [], replaced = [], kept = [];
     for (const e of entries) {
       const i = rec.entries.findIndex(x => x.date === e.date && x.strategy === e.strategy);
+      if (i >= 0 && isManual(rec.entries[i])) { kept.push({ date: e.date, strategy: e.strategy }); continue; }
       if (i >= 0) { replaced.push(rec.entries[i]); rec.entries[i] = e; }
       else { added.push({ date: e.date, strategy: e.strategy }); rec.entries.push(e); }
     }
     sortEntries(rec.entries);
-    return { added, replaced, removed: removed.length };
+    return { added, replaced, kept, removed: removed.length };
   } },
   addStrategy: { passkey: true, apply(rec, p, who) {
     const s = cleanStrategy(p.strategy, rec, who);
