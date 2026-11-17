@@ -118,7 +118,14 @@ function cleanEntry(e, strategyIds) {
   if (!Number.isFinite(pnl)) fail(400, 'P&L must be a number.');
   // >= 0 so older entries saved by the classic site always survive an import
   if (!Number.isFinite(investedFunds) || investedFunds < 0) fail(400, 'Capital deployed must be zero or more.');
+  // investedFunds = the trader's (user) capital; strategyCapital = what this strategy uses (optional,
+  // only on entries saved since the two were split — older entries hold one per-strategy figure)
   const out = { date, strategy, investedFunds, pnl };
+  if (e.strategyCapital !== undefined && e.strategyCapital !== null && e.strategyCapital !== '') {
+    const sc = Number(e.strategyCapital);
+    if (!Number.isFinite(sc) || sc < 0) fail(400, 'Strategy capital must be zero or more.');
+    out.strategyCapital = sc;
+  }
   if (e.execution !== undefined && e.execution !== null && e.execution !== '') {
     if (!EXECUTIONS.has(e.execution)) fail(400, 'Unknown execution type.');
     out.execution = e.execution;
@@ -201,6 +208,33 @@ const OPS = {
     }
     sortEntries(rec.entries);
     return { restored: list.length };
+  } },
+  // Bulk add/overwrite (AlgoTest log import). `remove` lets Undo take back rows the import added.
+  importEntries: { passkey: true, apply(rec, p) {
+    const ids = new Set(rec.strategies.map(s => s.id));
+    const list = Array.isArray(p.entries) ? p.entries : [];
+    const remove = Array.isArray(p.remove) ? p.remove : [];
+    if (list.length + remove.length > 3000) fail(400, 'Too many rows in one import.');
+    const entries = list.map(e => cleanEntry(e, ids));
+    const keys = new Set();
+    for (const e of entries) {
+      const k = e.date + '|' + e.strategy;
+      if (keys.has(k)) fail(400, `The import has two rows for the same strategy on ${e.date}.`);
+      keys.add(k);
+    }
+    const removed = [];
+    for (const r of remove) {
+      const i = rec.entries.findIndex(e => e.date === String(r && r.date) && e.strategy === String(r && r.strategy));
+      if (i >= 0) removed.push(...rec.entries.splice(i, 1));
+    }
+    const added = [], replaced = [];
+    for (const e of entries) {
+      const i = rec.entries.findIndex(x => x.date === e.date && x.strategy === e.strategy);
+      if (i >= 0) { replaced.push(rec.entries[i]); rec.entries[i] = e; }
+      else { added.push({ date: e.date, strategy: e.strategy }); rec.entries.push(e); }
+    }
+    sortEntries(rec.entries);
+    return { added, replaced, removed: removed.length };
   } },
   addStrategy: { passkey: true, apply(rec, p, who) {
     const s = cleanStrategy(p.strategy, rec, who);

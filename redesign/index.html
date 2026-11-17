@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..700;1,9..144,300..600&family=Geist:wght@300..700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/_td/css/style.css?v=23" />
+  <link rel="stylesheet" href="/_td/css/style.css?v=27" />
   <script type="importmap">
     {
       "imports": {
@@ -222,7 +222,7 @@
         <div class="table-wrap">
           <table class="ledger" id="ledger">
             <thead>
-              <tr><th>Date</th><th>Strategy</th><th class="num">Capital</th><th class="num">P&amp;L</th><th class="num">Return</th><th class="act"><span class="sr-only">Delete</span></th></tr>
+              <tr><th>Date</th><th>Strategy</th><th class="num" title="The trader's whole account">User capital</th><th class="num" title="What this strategy uses">Strategy capital</th><th class="num">P&amp;L</th><th class="num" title="P&amp;L ÷ user capital">Return</th><th class="act"><span class="sr-only">Delete</span></th></tr>
             </thead>
             <tbody></tbody>
           </table>
@@ -246,7 +246,10 @@
     <form id="logForm" class="log-form" novalidate>
       <label>Date<input type="date" class="input" name="date" required /></label>
       <label>Strategy<select class="input" name="strategy" required></select></label>
-      <label>Capital deployed (₹)<input type="number" class="input" name="funds" inputmode="numeric" placeholder="250000" required /></label>
+      <div class="cap-pair">
+        <label><span>User capital (₹) <span class="hint" id="userCapHint">whole account</span></span><input type="number" class="input" name="funds" inputmode="numeric" placeholder="822000" required /></label>
+        <label><span>Strategy capital (₹) <span class="hint">this strategy</span></span><input type="number" class="input" name="sfunds" inputmode="numeric" placeholder="200000" required /></label>
+      </div>
       <fieldset class="pnl-field">
         <legend>P&amp;L (₹)</legend>
         <div class="pnl-toggle" role="radiogroup">
@@ -277,6 +280,11 @@
       <p class="form-err" id="formErr" role="alert"></p>
       <button class="btn btn-gold wide" type="submit">Save entry</button>
       <p class="muted small">Saving the same strategy and date again replaces that day’s entry.</p>
+
+      <button type="button" class="algo-upload" id="algoBtn">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4m0 0L7.5 8.5M12 4l4.5 4.5M4 15v3a2 2 0 002 2h12a2 2 0 002-2v-3" /></svg>
+        <span><b>Upload AlgoTest execution log</b><small>Works out P&amp;L per portfolio by exit date · you review before saving</small></span>
+      </button>
 
       <div class="drawer-foot">
         <button type="button" class="reg-link" id="openRegister">
@@ -350,6 +358,50 @@
     </div>
   </div>
 
+  <!-- ===== AlgoTest log import (review before saving) ===== -->
+  <div class="modal-back" id="algoBack" hidden>
+    <div class="modal modal-xl" id="algoModal" role="dialog" aria-modal="true" aria-labelledby="algoTitle">
+      <div class="modal-head">
+        <div><p class="kicker" style="margin:0 0 6px">AlgoTest log</p><h3 id="algoTitle">Upload execution log</h3></div>
+        <button type="button" class="icon-btn" id="algoClose" aria-label="Close">✕</button>
+      </div>
+      <div class="algo-step1" id="algoStep1">
+        <div class="algo-pick">
+          <label>User
+            <select class="input" id="algoUser"></select>
+          </label>
+          <div>
+            <span class="exec-q">Portfolios to process <span class="hint">only registered ones can be picked</span></span>
+            <div class="reason-chips" id="algoPorts"></div>
+          </div>
+        </div>
+        <input type="file" id="algoFile" accept=".csv,text/csv" hidden />
+        <p class="form-err" id="algoErr1" role="alert"></p>
+        <div class="modal-actions spread">
+          <button type="button" class="btn-ghost" data-algo-cancel>Cancel</button>
+          <button type="button" class="btn btn-gold" id="algoChoose">Choose log file (CSV)…</button>
+        </div>
+      </div>
+      <div class="algo-step2" id="algoStep2" hidden>
+      <p class="algo-file" id="algoFileInfo"></p>
+      <div class="algo-map" id="algoMap"></div>
+      <div class="algo-chips" id="algoChips" role="group" aria-label="Show rows"></div>
+      <div class="algo-table-wrap">
+        <table class="ledger algo-table" id="algoTable">
+          <thead><tr><th class="act"><span class="sr-only">Save</span></th><th>Exit date</th><th>Strategy</th><th class="num">Saved now</th><th class="num">From log</th><th>Execution</th><th>Status</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="algo-note">P&amp;L is gross (trade prices only, no brokerage or charges), booked on the date each position closed. The file is read in your browser and is not stored.</p>
+      <p class="form-err" id="algoErr" role="alert"></p>
+      <div class="modal-actions spread">
+        <button type="button" class="btn-ghost" id="algoBack1">‹ Back</button>
+        <button type="button" class="btn btn-gold" id="algoSave">Save</button>
+      </div>
+      </div>
+    </div>
+  </div>
+
   <!-- ===== Day analytics drawer ===== -->
   <div class="drawer-backdrop" id="dayBackdrop" hidden></div>
   <aside class="drawer day-drawer" id="dayDrawer" aria-hidden="true" aria-labelledby="ddTitle" role="dialog">
@@ -371,6 +423,6 @@
   <div class="tip" id="tip" role="tooltip"></div>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-  <script type="module" src="/_td/js/app.js?v=22"></script>
+  <script type="module" src="/_td/js/app.js?v=25"></script>
 </body>
 </html>

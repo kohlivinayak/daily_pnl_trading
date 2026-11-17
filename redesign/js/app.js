@@ -6,6 +6,7 @@
    the server confirms JSONBin accepted it.
    ========================================================== */
 import { createSkyline } from './skyline.js?v=4';
+import { parseAlgoTestLog } from './algotest.js?v=1';
 
 const API = '/api';
 const PALETTE = ['#f4c56b', '#4cc9f0', '#a78bfa', '#ff9f5a', '#f472b6', '#60a5fa', '#e9e46b', '#c4b5fd'];
@@ -75,7 +76,7 @@ async function apiCall(path, body) {
 
 function adoptServerData(json) {
   data = json.data;
-  data.entries.forEach(e => { e.pnl = +e.pnl; e.investedFunds = +e.investedFunds; });
+  data.entries.forEach(e => { e.pnl = +e.pnl; e.investedFunds = +e.investedFunds; if (isSplit(e)) e.strategyCapital = +e.strategyCapital; });
   LIVE.meta = json.meta;
   LIVE.writable = !!json.meta.writable;
   updateLiveStatus();
@@ -176,6 +177,7 @@ async function init() {
     e.target.value = ''; // so the same file can be picked again
     if (file) importJson(file);
   });
+  setupAlgo();
   try {
     skyline = createSkyline($('#skyline'), { onHover: showTowerTip, reducedMotion });
   } catch (e) { console.warn('3D unavailable', e); }
@@ -239,14 +241,53 @@ function byDay(entries) {
     const d = map.get(e.date);
     d.pnl += e.pnl;
     d.rows.push({ ...stratById(e.strategy), pnl: e.pnl, funds: e.investedFunds });
+    (d.entries ||= []).push(e);
   }
   return [...map.values()].sort((a, b) => a.date.localeCompare(b.date));
 }
-// Capital deployed on the latest trading date in the set (Return = P&L ÷ this)
+/* Two capitals:
+   - USER capital = the trader's whole account (entry.investedFunds). Changes monthly/quarterly.
+   - STRATEGY capital = what one strategy uses (entry.strategyCapital, else the strategy's
+     registered capital). Changes about once a year. Used only on the strategy cards.
+   Entries saved before the split have no strategyCapital and hold one per-strategy figure,
+   so for those a trader's capital on a day is the SUM of their entries; for newer entries
+   every strategy carries the same account figure, so it is counted ONCE per trader. */
 function latestDate(entries) { return entries.reduce((m, e) => (e.date > m ? e.date : m), ''); }
+const isSplit = e => e.strategyCapital !== undefined && e.strategyCapital !== null;
+function traderCapOnDay(es) {
+  const split = es.filter(isSplit);
+  return split.length ? Math.max(...split.map(e => e.investedFunds)) : es.reduce((s, e) => s + e.investedFunds, 0);
+}
+// Return = P&L ÷ this: each trader's user capital on their latest date in the set, summed over traders
 function capitalOf(entries) {
-  const last = latestDate(entries);
-  return entries.filter(e => e.date === last).reduce((s, e) => s + e.investedFunds, 0);
+  const byT = new Map();
+  for (const e of entries) {
+    const t = stratById(e.strategy).trader, cur = byT.get(t);
+    if (!cur || e.date > cur.date) byT.set(t, { date: e.date, es: [e] });
+    else if (e.date === cur.date) cur.es.push(e);
+  }
+  let sum = 0;
+  for (const v of byT.values()) sum += traderCapOnDay(v.es);
+  return sum;
+}
+const regCap = s => (s.capital != null && s.capital !== '' ? +s.capital : null);
+const stratCapOf = e => (isSplit(e) ? +e.strategyCapital : regCap(stratById(e.strategy)) ?? e.investedFunds);
+// latest user capital of a trader as of a date (null = latest overall)
+function userCapOn(trader, date = null) {
+  const es = data.entries.filter(e => stratById(e.strategy).trader === trader);
+  const upto = date ? es.filter(e => e.date <= date) : es;
+  const pool = upto.length ? upto : es;
+  if (!pool.length) return '';
+  const last = latestDate(pool);
+  return traderCapOnDay(pool.filter(e => e.date === last));
+}
+// latest strategy capital as of a date: newest of (registered capital, last entry that carried one)
+function stratCapOn(sid, date = null) {
+  const s = stratById(sid), reg = regCap(s);
+  const withCap = data.entries.filter(e => e.strategy === sid && isSplit(e) && (!date || e.date <= date))
+    .sort((a, b) => a.date.localeCompare(b.date)).at(-1);
+  if (withCap && (reg === null || !s.capitalAt || s.capitalAt < withCap.date || (date && s.capitalAt > date))) return +withCap.strategyCapital;
+  return reg ?? '';
 }
 
 /* ---------------- stats ---------------- */
@@ -588,7 +629,7 @@ function renderDayDrawer() {
   const weekSum = days.filter(x => mondayOf(x.date) === wk && x.date <= d.date).reduce((a, x) => a + x.pnl, 0);
   const mtd = days.filter(x => x.date.slice(0, 7) === d.date.slice(0, 7) && x.date <= d.date).reduce((a, x) => a + x.pnl, 0);
   const running = days.slice(0, idx + 1).reduce((a, x) => a + x.pnl, 0);
-  const capital = d.rows.reduce((a, r) => a + r.funds, 0);
+  const capital = capitalOf(d.entries);
   const avg = days.reduce((a, x) => a + x.pnl, 0) / days.length;
   const rank = [...days].sort((a, b) => b.pnl - a.pnl).findIndex(x => x.date === d.date) + 1;
   const beat = (days.filter(x => x.pnl < d.pnl).length / days.length) * 100;
@@ -775,7 +816,7 @@ function renderStrategies(entries) {
   const rows = ids.map(id => {
     const es = entries.filter(e => e.strategy === id);
     const pnl = es.reduce((s, e) => s + e.pnl, 0);
-    const maxF = capitalOf(es); // capital on this strategy's latest date in the period
+    const maxF = stratCapOf(es.reduce((m, e) => (e.date > m.date ? e : m), es[0])); // strategy capital on its latest date in the period
     let c = 0;
     return {
       s: stratById(id), pnl, maxF, n: es.length,
@@ -925,12 +966,13 @@ function renderJournal() {
       <td class="date">${dfmt(e.date, { day: '2-digit', month: 'short', year: 'numeric' })}</td>
       <td><span class="sname" style="--c:${s.color}"><i></i>${esc(s.name)}</span></td>
       <td class="num">${money(e.investedFunds, false)}</td>
+      <td class="num muted">${money(stratCapOf(e), false)}</td>
       <td class="num ${cls(e.pnl)}">${money(e.pnl)}</td>
       <td class="num ${cls(e.pnl)}">${pct(e.investedFunds ? (e.pnl / e.investedFunds) * 100 : 0)}</td>
       <td class="act"><button type="button" class="row-del" data-key="${esc(key)}" aria-label="Delete ${esc(s.name)} entry on ${e.date}" title="Delete entry">
         <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5.5 5.5l9 9m0-9l-9 9" /></svg></button></td>
     </tr>`;
-  }).join('') || '<tr><td colspan="6" class="muted">No entries in this period.</td></tr>';
+  }).join('') || '<tr><td colspan="7" class="muted">No entries in this period.</td></tr>';
   $('#ledger tbody').querySelectorAll('.row-del').forEach(b => b.addEventListener('click', () => deleteEntry(b.dataset.key)));
 }
 
@@ -985,11 +1027,11 @@ async function downloadCsv() {
     const s = v === null || v === undefined ? '' : String(v);
     return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
-  const rows = [['Date', 'Trader', 'Strategy', 'Strategy ID', 'Capital Deployed (INR)', 'P&L (INR)', 'Return %', 'Execution']];
+  const rows = [['Date', 'Trader', 'Strategy', 'Strategy ID', 'User Capital (INR)', 'Strategy Capital (INR)', 'P&L (INR)', 'Return % (on user capital)', 'Execution']];
   sortedEntries().forEach(e => {
     const s = stratById(e.strategy);
     rows.push([
-      e.date, s.trader, s.short, e.strategy, e.investedFunds, e.pnl,
+      e.date, s.trader, s.short, e.strategy, e.investedFunds, isSplit(e) ? e.strategyCapital : '', e.pnl,
       e.investedFunds ? ((e.pnl / e.investedFunds) * 100).toFixed(2) : '',
       EXEC_LABEL[e.execution] || '',
     ]);
@@ -1016,6 +1058,7 @@ function parseBackup(text) {
       && Number.isFinite(+e.pnl) && Number.isFinite(+e.investedFunds);
     if (!ok) { skipped++; continue; }
     const clean = { ...e, pnl: +e.pnl, investedFunds: +e.investedFunds };
+    if (clean.strategyCapital != null && clean.strategyCapital !== '') clean.strategyCapital = +clean.strategyCapital; else delete clean.strategyCapital;
     seen.set(e.date + '|' + e.strategy, clean); // a duplicate date+strategy keeps the last row
   }
   const entries = [...seen.values()].sort((a, b) => a.date.localeCompare(b.date));
@@ -1057,6 +1100,222 @@ async function importJson(file) {
       if (await runOp('replaceAll', { data: before }, who.key)) toast('Previous data restored');
     },
   });
+}
+
+/* ----- AlgoTest execution log -> review -> save (passkey + Undo) -----
+   Opened from Log P&L. Choose the user and the portfolios, then the CSV.
+   The file is read here in the browser (never uploaded or stored).
+   Each log portfolio goes ONLY to "<User> - <Portfolio> Portfolio"
+   (Narad -> "Nishant - Narad Portfolio"); a portfolio that isn't
+   registered for that user is not processed. */
+const ALGO = { parsed: null, file: '', user: '', ports: new Set(), account: '', choice: new Map(), filter: 'all' };
+const lsGet = k => { try { return localStorage.getItem(k); } catch { return null; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* private mode */ } };
+const allTraders = () => [...new Set(strategies.map(s => s.trader))].filter(t => t !== 'Desk');
+const portfolioName = s => (/^(.+?)\s+portfolio$/i.exec(s.short) || [])[1] || null; // "Narad Portfolio" -> "Narad"
+const userPortfolios = user => strategies.filter(s => s.trader === user && portfolioName(s));
+const sidFor = (user, port) => (userPortfolios(user).find(s => portfolioName(s).toLowerCase() === port.toLowerCase()) || {}).id || '';
+
+function openAlgo() {
+  const traders = allTraders();
+  const remembered = lsGet('td.algo.user');
+  ALGO.user = traders.includes(ALGO.user) ? ALGO.user : traders.includes(remembered) ? remembered : traders[0] || '';
+  $('#algoUser').innerHTML = traders.map(t => `<option${t === ALGO.user ? ' selected' : ''}>${esc(t)}</option>`).join('');
+  ALGO.ports = new Set(userPortfolios(ALGO.user).map(s => s.id));
+  ALGO.parsed = null;
+  renderAlgoPorts();
+  algoStep(1);
+  const back = $('#algoBack'), modal = $('#algoModal');
+  back.hidden = false; modal.hidden = false;
+  requestAnimationFrame(() => { back.classList.add('show'); modal.classList.add('show'); });
+}
+function closeAlgo() {
+  const back = $('#algoBack'), modal = $('#algoModal');
+  back.classList.remove('show'); modal.classList.remove('show');
+  setTimeout(() => { if (!back.classList.contains('show')) back.hidden = true; }, 250);
+  ALGO.parsed = null;
+}
+function algoStep(n) {
+  $('#algoStep1').hidden = n !== 1; $('#algoStep2').hidden = n !== 2;
+  $('#algoTitle').textContent = n === 1 ? 'Upload execution log' : 'Review before saving';
+}
+function renderAlgoPorts() {
+  const list = userPortfolios(ALGO.user);
+  const host = $('#algoPorts');
+  host.innerHTML = list.length
+    ? list.map(s => `<button type="button" class="rchip${ALGO.ports.has(s.id) ? ' on' : ''}" data-id="${esc(s.id)}" aria-pressed="${ALGO.ports.has(s.id)}">${esc(s.short)}</button>`).join('')
+    : `<p class="muted small" style="margin:4px 0 0">${esc(ALGO.user)} has no “… Portfolio” strategies yet. Register them in Manage strategies (e.g. “${esc(ALGO.user)} - Narad Portfolio”).</p>`;
+  host.querySelectorAll('.rchip').forEach(b => b.addEventListener('click', () => {
+    if (ALGO.ports.has(b.dataset.id)) ALGO.ports.delete(b.dataset.id); else ALGO.ports.add(b.dataset.id);
+    b.classList.toggle('on', ALGO.ports.has(b.dataset.id)); b.setAttribute('aria-pressed', ALGO.ports.has(b.dataset.id));
+  }));
+  $('#algoErr1').textContent = '';
+}
+async function processAlgoFile(file) {
+  const err = $('#algoErr1');
+  if (file.size > 15 * 1024 * 1024) { err.textContent = 'That file is too large for an AlgoTest log (over 15 MB).'; return; }
+  const parsed = parseAlgoTestLog(await file.text());
+  if (parsed.error) { err.textContent = parsed.error; return; }
+  lsSet('td.algo.user', ALGO.user);
+  Object.assign(ALGO, { parsed, file: file.name, choice: new Map(), filter: 'all', account: parsed.accounts[0] });
+  algoStep(2);
+  renderAlgo();
+}
+// log rows (selected + registered portfolios only) -> one row per (date, strategy), compared with what is saved
+function algoRows() {
+  const out = new Map();
+  for (const r of ALGO.parsed.rows) {
+    if (r.account !== ALGO.account) continue;
+    const sid = sidFor(ALGO.user, r.portfolio);
+    if (!sid || !ALGO.ports.has(sid)) continue;
+    const k = r.date + '|' + sid;
+    const row = out.get(k) || { key: k, date: r.date, sid, pnl: 0, openLegs: [], strategies: [] };
+    row.pnl += r.pnl; row.openLegs.push(...r.openLegs); row.strategies.push(...r.strategies);
+    out.set(k, row);
+  }
+  return [...out.values()].map(row => {
+    row.pnl = Math.round(row.pnl * 100) / 100;
+    row.saved = data.entries.find(e => e.date === row.date && e.strategy === row.sid) || null;
+    row.status = row.openLegs.length ? 'input' : !row.saved ? 'new' : Math.abs(row.saved.pnl - row.pnl) < 1 ? 'same' : 'diff';
+    if (!ALGO.choice.has(row.key)) {
+      ALGO.choice.set(row.key, { include: row.status === 'new', exec: row.status === 'input' ? 'manual' : row.saved?.execution || 'clean', pnl: '' });
+    }
+    row.c = ALGO.choice.get(row.key);
+    if (row.status === 'same') row.c.include = false;
+    return row;
+  }).sort((a, b) => a.date.localeCompare(b.date) || a.sid.localeCompare(b.sid));
+}
+const ALGO_STATUS = { new: 'New', diff: 'Different', input: 'Needs P&L', same: 'Same as saved' };
+function renderAlgo() {
+  const P = ALGO.parsed;
+  const span = `${dfmt(P.from, { day: 'numeric', month: 'short', year: 'numeric' })} – ${dfmt(P.to, { day: 'numeric', month: 'short', year: 'numeric' })}`;
+  $('#algoFileInfo').innerHTML = `<b>${esc(ALGO.file)}</b> · ${esc(ALGO.user)} · ${span}`
+    + (P.rejected ? ` · ${P.rejected} unfilled/rejected order rows ignored` : '')
+    + (P.stillOpen.length ? ` · ${P.stillOpen.length} leg${P.stillOpen.length === 1 ? '' : 's'} still open (not counted)` : '');
+
+  // which log portfolios are processed, and which are not (and why)
+  const inFile = [...new Set(P.rows.filter(r => r.account === ALGO.account).map(r => r.portfolio))].sort();
+  const tag = p => {
+    const sid = sidFor(ALGO.user, p);
+    if (!sid) return `<span class="st skip" title="No “${esc(ALGO.user)} - ${esc(p)} Portfolio” is registered">${esc(p)} · not registered, skipped</span>`;
+    if (!ALGO.ports.has(sid)) return `<span class="st skip">${esc(p)} · not selected</span>`;
+    return `<span class="st new">${esc(p)} → ${esc(stratById(sid).name)}</span>`;
+  };
+  $('#algoMap').innerHTML = (P.accounts.length > 1
+    ? `<div class="acct">This file has ${P.accounts.length} AlgoTest accounts. Use
+        <select class="input" id="algoAcct">${P.accounts.map(a => `<option${a === ALGO.account ? ' selected' : ''}>${esc(a)}</option>`).join('')}</select></div>` : '')
+    + `<div class="acct algo-tags">${inFile.map(tag).join('')}</div>`;
+  $('#algoAcct')?.addEventListener('change', e => { ALGO.account = e.target.value; ALGO.choice.clear(); renderAlgo(); });
+
+  const rows = algoRows();
+  const count = st => rows.filter(r => st === 'all' || r.status === st).length;
+  if (ALGO.filter !== 'all' && !count(ALGO.filter)) ALGO.filter = 'all';
+  const chips = [['all', 'All'], ['new', 'New'], ['diff', 'Different'], ['input', 'Needs P&L'], ['same', 'Same']];
+  $('#algoChips').innerHTML = chips
+    .filter(([k]) => k === 'all' || count(k))
+    .map(([k, l]) => `<button type="button" data-f="${k}" class="${ALGO.filter === k ? 'on' : ''}">${l}<b>${count(k)}</b></button>`).join('');
+  $('#algoChips').querySelectorAll('button').forEach(b => b.addEventListener('click', () => { ALGO.filter = b.dataset.f; renderAlgo(); }));
+
+  const shown = rows.filter(r => ALGO.filter === 'all' || r.status === ALGO.filter);
+  const tb = $('#algoTable tbody');
+  tb.innerHTML = shown.map(r => {
+    const s = stratById(r.sid);
+    const locked = r.status === 'same';
+    const legs = r.openLegs.length
+      ? `<span class="sub">${r.openLegs.length} leg${r.openLegs.length === 1 ? '' : 's'} not exited by AlgoTest (${r.openLegs.map(l => esc(l.symbol)).join(', ')}). Closed legs: ${money(r.pnl)}. Type the day’s full P&amp;L.</span>` : '';
+    const logCell = r.status === 'input'
+      ? `<input class="input pnl-in${r.c.pnl === '' ? ' missing' : ''}" data-pnl="${esc(r.key)}" type="number" step="0.01" inputmode="decimal" placeholder="P&amp;L ₹" value="${esc(r.c.pnl)}" aria-label="P&L for ${esc(s.name)} on ${r.date}" />`
+      : `<b class="${cls(r.pnl)}">${money(r.pnl)}</b>`;
+    return `<tr class="${locked ? 'dim' : ''}">
+      <td class="act"><input type="checkbox" data-inc="${esc(r.key)}"${r.c.include ? ' checked' : ''}${locked ? ' disabled' : ''} aria-label="Save this row" /></td>
+      <td class="mono">${dfmt(r.date, { day: 'numeric', month: 'short', year: 'numeric' })}</td>
+      <td class="strat" style="--c:${s.color}"><i></i>${esc(s.name)}<span class="sub">${esc([...new Set(r.strategies)].join(' · '))}</span>${legs}</td>
+      <td class="num">${r.saved ? `<span class="${cls(r.saved.pnl)}">${money(r.saved.pnl)}</span>` : '<span class="muted">—</span>'}</td>
+      <td class="num">${logCell}</td>
+      <td><select class="input" data-exec="${esc(r.key)}"${locked ? ' disabled' : ''}>
+        ${Object.entries(EXEC_LABEL).map(([v, l]) => `<option value="${v}"${r.c.exec === v ? ' selected' : ''}>${l}</option>`).join('')}</select></td>
+      <td><span class="st ${r.status}">${ALGO_STATUS[r.status]}</span></td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="7" class="muted">Nothing to process: none of the selected portfolios appear in this file.</td></tr>';
+  tb.querySelectorAll('[data-inc]').forEach(cb => cb.addEventListener('change', () => { ALGO.choice.get(cb.dataset.inc).include = cb.checked; updateAlgoSave(); }));
+  tb.querySelectorAll('[data-exec]').forEach(sel => sel.addEventListener('change', () => { ALGO.choice.get(sel.dataset.exec).exec = sel.value; }));
+  tb.querySelectorAll('[data-pnl]').forEach(inp => inp.addEventListener('input', () => {
+    const c = ALGO.choice.get(inp.dataset.pnl);
+    c.pnl = inp.value.trim();
+    c.include = c.pnl !== '' && Number.isFinite(+c.pnl);
+    inp.classList.toggle('missing', c.pnl === '');
+    const cb = tb.querySelector(`[data-inc="${CSS.escape(inp.dataset.pnl)}"]`);
+    if (cb) cb.checked = c.include;
+    updateAlgoSave();
+  }));
+  $('#algoErr').textContent = '';
+  updateAlgoSave();
+}
+function algoToSave() {
+  return algoRows().filter(r => r.c.include).map(r => {
+    const pnl = r.status === 'input' ? Number(r.c.pnl) : r.pnl;
+    const sv = r.saved;
+    const userCap = sv ? sv.investedFunds : +userCapOn(ALGO.user, r.date) || 0;
+    const stratCap = sv && isSplit(sv) ? sv.strategyCapital : stratCapOn(r.sid, r.date);
+    const entry = { date: r.date, strategy: r.sid, investedFunds: userCap, pnl, execution: r.c.exec };
+    if (stratCap !== '' && stratCap != null) entry.strategyCapital = +stratCap;
+    return { row: r, entry };
+  });
+}
+function updateAlgoSave() {
+  const n = algoToSave().length;
+  const b = $('#algoSave');
+  b.textContent = n ? `Save ${n} entr${n === 1 ? 'y' : 'ies'}` : 'Nothing ticked';
+  b.disabled = !n;
+}
+async function saveAlgo() {
+  const list = algoToSave();
+  const bad = list.find(x => !Number.isFinite(x.entry.pnl));
+  if (bad) { $('#algoErr').textContent = `Type the P&L for ${stratById(bad.entry.strategy).name} on ${bad.entry.date}.`; return; }
+  if (!list.length) return;
+  const replacing = list.filter(x => x.row.saved).length;
+  const net = list.reduce((a, x) => a + x.entry.pnl, 0);
+  const modal = $('#algoModal');
+  const who = await askPasskey(`
+    <p>Save <b>${list.length}</b> entr${list.length === 1 ? 'y' : 'ies'} for ${esc(ALGO.user)} from the AlgoTest log${replacing ? `, overwriting <b>${replacing}</b> saved one${replacing === 1 ? '' : 's'}` : ''}?</p>
+    <div class="pk-entry" style="--c:var(--gold)"><span><i></i>Net P&amp;L of these rows</span><b class="${cls(net)}">${money(net)}</b></div>`,
+    { okLabel: 'Save entries' });
+  modal.hidden = false; // the passkey dialog hides other modals while it is open
+  if (!who) return;
+  const res = await runOp('importEntries', { entries: list.map(x => x.entry) }, who.key);
+  if (!res) return; // not saved, error shown; the review stays open
+  const { added, replaced } = res.result;
+  closeAlgo();
+  toast(`Saved ${added.length + replaced.length} entries from the AlgoTest log by ${who.who}`, {
+    label: 'Undo',
+    run: async () => {
+      if (await runOp('importEntries', { entries: replaced, remove: added }, who.key)) toast('Import undone');
+    },
+  });
+}
+function setupAlgo() {
+  $('#algoBtn').addEventListener('click', openAlgo);
+  $('#algoUser').addEventListener('change', e => {
+    ALGO.user = e.target.value;
+    ALGO.ports = new Set(userPortfolios(ALGO.user).map(s => s.id));
+    renderAlgoPorts();
+  });
+  $('#algoChoose').addEventListener('click', () => {
+    if (!ALGO.ports.size) { $('#algoErr1').textContent = 'Pick at least one portfolio.'; return; }
+    $('#algoFile').click();
+  });
+  $('#algoFile').addEventListener('change', e => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (file) processAlgoFile(file);
+  });
+  $('#algoClose').addEventListener('click', closeAlgo);
+  $('#algoModal').querySelector('[data-algo-cancel]').addEventListener('click', closeAlgo);
+  $('#algoBack1').addEventListener('click', () => { renderAlgoPorts(); algoStep(1); });
+  $('#algoSave').addEventListener('click', saveAlgo);
+  addEventListener('keydown', e => {
+    if (e.key === 'Escape' && !$('#algoBack').hidden && $('#modalBack').hidden) { e.stopPropagation(); closeAlgo(); }
+  }, true);
 }
 
 function refreshAfterDataChange() {
@@ -1416,12 +1675,13 @@ function buildChips() {
 function setupDrawer() {
   const drawer = $('#drawer'), back = $('#drawerBackdrop'), form = $('#logForm');
   let sign = 1, exec = 'clean';
-  // Capital pre-fill: the most recent of (last entry's capital, capital set in Manage strategies)
-  const lastFunds = id => {
-    const l = data.entries.filter(e => e.strategy === id).sort((a, b) => a.date.localeCompare(b.date)).at(-1);
+  // Pre-fill both capitals once a strategy is picked:
+  //  user capital = that trader's latest account figure; strategy capital = latest for this strategy
+  const fillCaps = id => {
     const s = stratById(id);
-    if (s.capital != null && s.capital !== '' && (!l || (s.capitalAt && s.capitalAt >= l.date))) return s.capital;
-    return l ? l.investedFunds : (s.capital || '');
+    form.funds.value = userCapOn(s.trader);
+    form.sfunds.value = stratCapOn(id);
+    $('#userCapHint').textContent = s.trader && s.trader !== '—' ? s.trader + "'s account" : 'whole account';
   };
   const fillStrategies = (selectId) => {
     const keep = selectId || form.strategy.value;
@@ -1430,7 +1690,7 @@ function setupDrawer() {
     form.strategy.innerHTML = Object.entries(groups).map(([t, list]) =>
       `<optgroup label="${esc(t)}">${list.map(s => `<option value="${esc(s.id)}">${esc(s.short)}</option>`).join('')}</optgroup>`).join('');
     if (keep && strategies.some(s => s.id === keep)) form.strategy.value = keep;
-    form.funds.value = lastFunds(form.strategy.value);
+    fillCaps(form.strategy.value);
   };
   const setExec = v => {
     exec = v;
@@ -1453,7 +1713,7 @@ function setupDrawer() {
   $('#closeLog').addEventListener('click', close);
   back.addEventListener('click', close);
   addEventListener('keydown', e => { if (e.key === 'Escape' && drawer.classList.contains('open') && $('#modalBack').hidden) close(); });
-  form.strategy.addEventListener('change', () => { form.funds.value = lastFunds(form.strategy.value); });
+  form.strategy.addEventListener('change', () => fillCaps(form.strategy.value));
   form.querySelectorAll('.pnl-toggle button').forEach(b => b.addEventListener('click', () => {
     sign = +b.dataset.sign;
     form.querySelectorAll('.pnl-toggle button').forEach(x => { x.classList.toggle('on', x === b); x.setAttribute('aria-checked', x === b); });
@@ -1464,13 +1724,13 @@ function setupDrawer() {
     e.preventDefault();
     if (saving) return;
     const err = $('#formErr');
-    const date = form.date.value, strategy = form.strategy.value, funds = +form.funds.value, raw = form.pnl.value;
-    if (!date || !strategy || !funds || raw === '') { err.textContent = 'Fill in every field.'; return; }
-    if (!Number.isFinite(+raw) || funds < 0) { err.textContent = 'Check the numbers.'; return; }
+    const date = form.date.value, strategy = form.strategy.value, funds = +form.funds.value, sfunds = +form.sfunds.value, raw = form.pnl.value;
+    if (!date || !strategy || !funds || !sfunds || raw === '') { err.textContent = 'Fill in every field (both capitals too).'; return; }
+    if (!Number.isFinite(+raw) || funds < 0 || sfunds < 0) { err.textContent = 'Check the numbers.'; return; }
     err.textContent = '';
     const pnl = sign * Math.abs(+raw);
     // execution type (clean | manual | tech) is stored for the future live-vs-backtest page; not shown on this page
-    const entry = { date, strategy, investedFunds: funds, pnl, execution: exec };
+    const entry = { date, strategy, investedFunds: funds, strategyCapital: sfunds, pnl, execution: exec };
     saving = true; saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
     const res = await runOp('upsertEntry', { entry });
     saving = false; saveBtn.disabled = false; saveBtn.textContent = 'Save entry';
