@@ -397,8 +397,11 @@ const BT_DIR = path.join(__dirname, 'backtests');
 // From 1 Dec 2026 each portfolio is logged on its own, so earlier combined entries don't compare.
 const COMPARE_FROM = /^\d{4}-\d{2}-\d{2}$/.test(process.env.COMPARE_FROM || '') ? process.env.COMPARE_FROM : '2026-12-01';
 const DMY = /^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/;
+// accepts dd-mm-yyyy, dd/mm/yyyy and yyyy-mm-dd (AlgoTest exports use both)
 function dmyToIso(s) {
-  const m = DMY.exec(String(s || '').trim());
+  const t = String(s || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return Number.isNaN(Date.parse(t)) ? null : t;
+  const m = DMY.exec(t);
   if (!m) return null;
   const iso = `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
   return Number.isNaN(Date.parse(iso)) ? null : iso;
@@ -424,8 +427,12 @@ function parseBacktestCsv(text) {
   const iVix = col(['vix', 'india vix']), iPl = col(['p/l', 'pnl', 'p&l', 'profit/loss', 'profit']);
   if (iExit < 0 || iPl < 0) return { error: 'The file needs "Exit Date" and "P/L" columns.' };
   const trades = []; let skipped = 0;
+  // Newer AlgoTest exports list each trade ("1") followed by its legs ("1.1", "1.2"):
+  // the trade row already holds the total and the final exit date, so legs are skipped.
+  const iIndex = col(['index']);
   for (const line of lines.slice(1)) {
     const c = splitCsvLine(line);
+    if (iIndex >= 0 && String(c[iIndex] || '').includes('.')) continue;
     const exit = dmyToIso(c[iExit]);
     const pnl = Number(String(c[iPl] || '').replace(/,/g, ''));
     if (!exit || !Number.isFinite(pnl)) { skipped++; continue; }

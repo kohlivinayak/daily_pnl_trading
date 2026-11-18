@@ -1116,6 +1116,14 @@ const allTraders = () => [...new Set(strategies.map(s => s.trader))].filter(t =>
 const portfolioName = s => (/^(.+?)\s+portfolio$/i.exec(s.short) || [])[1] || null; // "Narad Portfolio" -> "Narad"
 const userPortfolios = user => strategies.filter(s => s.trader === user && portfolioName(s));
 const sidFor = (user, port) => (userPortfolios(user).find(s => portfolioName(s).toLowerCase() === port.toLowerCase()) || {}).id || '';
+// Combined mode (until Mar 2027): every portfolio in the log goes into ONE strategy (e.g. "Nishant - Narad Portfolio")
+const combineOn = () => lsGet('td.algo.combine') !== '0';
+function defaultTarget(user) {
+  const mine = strategies.filter(s => s.trader === user);
+  const kept = lsGet('td.algo.target.' + user);
+  return (mine.find(s => s.id === kept) || mine.find(s => /^narad portfolio$/i.test(s.short))
+    || mine.find(s => /^narad/i.test(s.short)) || mine[0] || {}).id || '';
+}
 
 function openAlgo() {
   const traders = allTraders();
@@ -1141,6 +1149,13 @@ function algoStep(n) {
   $('#algoTitle').textContent = n === 1 ? 'Upload execution log' : 'Review before saving';
 }
 function renderAlgoPorts() {
+  ALGO.combine = combineOn();
+  $('#algoCombine').checked = ALGO.combine;
+  $('#algoTargetWrap').hidden = !ALGO.combine;
+  $('#algoPortsWrap').hidden = ALGO.combine;
+  const mine = strategies.filter(s => s.trader === ALGO.user);
+  if (!mine.some(s => s.id === ALGO.target)) ALGO.target = defaultTarget(ALGO.user);
+  $('#algoTarget').innerHTML = mine.map(s => `<option value="${esc(s.id)}"${s.id === ALGO.target ? ' selected' : ''}>${esc(s.name)}</option>`).join('');
   const list = userPortfolios(ALGO.user);
   const host = $('#algoPorts');
   host.innerHTML = list.length
@@ -1167,8 +1182,8 @@ function algoRows() {
   const out = new Map();
   for (const r of ALGO.parsed.rows) {
     if (r.account !== ALGO.account) continue;
-    const sid = sidFor(ALGO.user, r.portfolio);
-    if (!sid || !ALGO.ports.has(sid)) continue;
+    const sid = ALGO.combine ? ALGO.target : sidFor(ALGO.user, r.portfolio);
+    if (!sid || (!ALGO.combine && !ALGO.ports.has(sid))) continue;
     const k = r.date + '|' + sid;
     const row = out.get(k) || { key: k, date: r.date, sid, pnl: 0, openLegs: [], strategies: [] };
     row.pnl += r.pnl; row.openLegs.push(...r.openLegs); row.strategies.push(...r.strategies);
@@ -1207,7 +1222,9 @@ function renderAlgo() {
   $('#algoMap').innerHTML = (P.accounts.length > 1
     ? `<div class="acct">This file has ${P.accounts.length} AlgoTest accounts. Use
         <select class="input" id="algoAcct">${P.accounts.map(a => `<option${a === ALGO.account ? ' selected' : ''}>${esc(a)}</option>`).join('')}</select></div>` : '')
-    + `<div class="acct algo-tags">${inFile.map(tag).join('')}</div>`;
+    + `<div class="acct algo-tags">${ALGO.combine
+      ? `<span class="st new">${inFile.map(esc).join(' + ')} → combined into ${esc(stratById(ALGO.target).name)}</span>`
+      : inFile.map(tag).join('')}</div>`;
   $('#algoAcct')?.addEventListener('change', e => { ALGO.account = e.target.value; ALGO.choice.clear(); renderAlgo(); });
 
   const rows = algoRows();
@@ -1301,10 +1318,14 @@ function setupAlgo() {
   $('#algoUser').addEventListener('change', e => {
     ALGO.user = e.target.value;
     ALGO.ports = new Set(userPortfolios(ALGO.user).map(s => s.id));
+    ALGO.target = defaultTarget(ALGO.user);
     renderAlgoPorts();
   });
+  $('#algoCombine').addEventListener('change', e => { lsSet('td.algo.combine', e.target.checked ? '1' : '0'); renderAlgoPorts(); });
+  $('#algoTarget').addEventListener('change', e => { ALGO.target = e.target.value; lsSet('td.algo.target.' + ALGO.user, ALGO.target); });
   $('#algoChoose').addEventListener('click', () => {
-    if (!ALGO.ports.size) { $('#algoErr1').textContent = 'Pick at least one portfolio.'; return; }
+    if (ALGO.combine && !ALGO.target) { $('#algoErr1').textContent = 'Pick the strategy to save into.'; return; }
+    if (!ALGO.combine && !ALGO.ports.size) { $('#algoErr1').textContent = 'Pick at least one portfolio.'; return; }
     $('#algoFile').click();
   });
   $('#algoFile').addEventListener('change', e => {

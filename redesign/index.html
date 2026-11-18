@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..700;1,9..144,300..600&family=Geist:wght@300..700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/_td/css/style.css?v=28" />
+  <link rel="stylesheet" href="/_td/css/style.css?v=29" />
   <script type="importmap">
     {
       "imports": {
@@ -370,7 +370,14 @@
           <label>User
             <select class="input" id="algoUser"></select>
           </label>
-          <div>
+          <label class="algo-combine">
+            <input type="checkbox" id="algoCombine" />
+            <span><b>Combine all portfolios into one strategy</b><small>Narad + Vinayak + Garud + Sarang added together per day, booked on each run’s last exit date. Turn off when you start recording portfolios separately.</small></span>
+          </label>
+          <label id="algoTargetWrap">Save the combined P&amp;L into
+            <select class="input" id="algoTarget"></select>
+          </label>
+          <div id="algoPortsWrap">
             <span class="exec-q">Portfolios to process <span class="hint">only registered ones can be picked</span></span>
             <div class="reason-chips" id="algoPorts"></div>
           </div>
@@ -423,6 +430,6 @@
   <div class="tip" id="tip" role="tooltip"></div>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-  <script type="module" src="/_td/js/app.js?v=27"></script>
+  <script type="module" src="/_td/js/app.js?v=28"></script>
 </body>
 </html>
